@@ -18,8 +18,13 @@
  *
  * CDDL HEADER END
  */
+
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
+ */
+
+/*
+ * Copyright 2019 Nexenta Systems, Inc.
  */
 
 #include <sys/systm.h>
@@ -27,7 +32,6 @@
 #include <sys/kmem.h>
 #include <sys/disp.h>
 #include <sys/id_space.h>
-#include <sys/atomic.h>
 #include <rpc/rpc.h>
 #include <nfs/nfs4.h>
 #include <nfs/nfs4_db_impl.h>
@@ -60,7 +64,13 @@ rfs4_dbe_getid(rfs4_dbe_t *entry)
 void
 rfs4_dbe_hold(rfs4_dbe_t *entry)
 {
-	atomic_inc_32(&entry->dbe_refcnt);
+	if (!MUTEX_HELD(entry->dbe_lock)) {
+		mutex_enter(entry->dbe_lock);
+		entry->dbe_refcnt++;
+		mutex_exit(entry->dbe_lock);
+	} else {
+		entry->dbe_refcnt++;
+	}
 }
 
 /*
@@ -69,7 +79,14 @@ rfs4_dbe_hold(rfs4_dbe_t *entry)
 void
 rfs4_dbe_rele_nolock(rfs4_dbe_t *entry)
 {
-	atomic_dec_32(&entry->dbe_refcnt);
+	if (!MUTEX_HELD(entry->dbe_lock)) {
+		ASSERT(entry->dbe_refcnt > 0);
+		mutex_enter(entry->dbe_lock);
+		entry->dbe_refcnt--;
+		mutex_exit(entry->dbe_lock);
+	} else {
+		entry->dbe_refcnt--;
+	}
 }
 
 
@@ -86,8 +103,15 @@ rfs4_dbe_refcnt(rfs4_dbe_t *entry)
 void
 rfs4_dbe_invalidate(rfs4_dbe_t *entry)
 {
-	entry->dbe_invalid = TRUE;
-	entry->dbe_skipsearch = TRUE;
+	if (!MUTEX_HELD(entry->dbe_lock)) {
+		mutex_enter(entry->dbe_lock);
+		entry->dbe_invalid = TRUE;
+		entry->dbe_skipsearch = TRUE;
+		mutex_exit(entry->dbe_lock);
+	} else {
+		entry->dbe_invalid = TRUE;
+		entry->dbe_skipsearch = TRUE;
+	}
 }
 
 /*
@@ -129,7 +153,7 @@ rfs4_dbe_rele(rfs4_dbe_t *entry)
 {
 	mutex_enter(entry->dbe_lock);
 	ASSERT(entry->dbe_refcnt > 1);
-	atomic_dec_32(&entry->dbe_refcnt);
+	entry->dbe_refcnt--;
 	entry->dbe_time_rele = gethrestime_sec();
 	mutex_exit(entry->dbe_lock);
 }
@@ -249,6 +273,50 @@ rfs4_database_destroy(rfs4_database_t *db)
 	kmem_free(db, sizeof (rfs4_database_t));
 }
 
+/*
+ * Used to get the correct kmem_cache database for the state table being
+ * created.
+ * Helper function for rfs4_table_create
+ */
+static kmem_cache_t *
+get_db_mem_cache(char *name)
+{
+	int i;
+
+	for (i = 0; i < RFS4_DB_MEM_CACHE_NUM; i++) {
+		if (strcmp(name, rfs4_db_mem_cache_table[i].r_db_name) == 0)
+			return (rfs4_db_mem_cache_table[i].r_db_mem_cache);
+	}
+	/*
+	 * There is no associated kmem cache for this NFS4 server state
+	 * table name
+	 */
+	return (NULL);
+}
+
+/*
+ * Used to initialize the global NFSv4 server state database.
+ * Helper funtion for rfs4_state_g_init and called when module is loaded.
+ */
+kmem_cache_t *
+/* CSTYLED */
+nfs4_init_mem_cache(char *cache_name, uint32_t idxcnt, uint32_t size, uint32_t idx)
+{
+	kmem_cache_t *mem_cache = kmem_cache_create(cache_name,
+	    sizeof (rfs4_dbe_t) + idxcnt * sizeof (rfs4_link_t) + size,
+	    0,
+	    rfs4_dbe_kmem_constructor,
+	    rfs4_dbe_kmem_destructor,
+	    NULL,
+	    NULL,
+	    NULL,
+	    0);
+	(void) strlcpy(rfs4_db_mem_cache_table[idx].r_db_name, cache_name,
+	    strlen(cache_name) + 1);
+	rfs4_db_mem_cache_table[idx].r_db_mem_cache = mem_cache;
+	return (mem_cache);
+}
+
 rfs4_table_t *
 rfs4_table_create(rfs4_database_t *db, char *tabname, time_t max_cache_time,
     uint32_t idxcnt, bool_t (*create)(rfs4_entry_t, void *),
@@ -304,15 +372,11 @@ rfs4_table_create(rfs4_database_t *db, char *tabname, time_t max_cache_time,
 	table->dbt_destroy = destroy;
 	table->dbt_expiry = expiry;
 
-	table->dbt_mem_cache = kmem_cache_create(cache_name,
-	    sizeof (rfs4_dbe_t) + idxcnt * sizeof (rfs4_link_t) + size,
-	    0,
-	    rfs4_dbe_kmem_constructor,
-	    rfs4_dbe_kmem_destructor,
-	    NULL,
-	    table,
-	    NULL,
-	    0);
+	/*
+	 * get the correct kmem_cache for this table type based on the name.
+	 */
+	table->dbt_mem_cache = get_db_mem_cache(cache_name);
+
 	kmem_free(cache_name, len+13);
 
 	table->dbt_debug = db->db_debug_flags;
@@ -364,7 +428,7 @@ rfs4_table_destroy(rfs4_database_t *db, rfs4_table_t *table)
 	kmem_free(table->dbt_name, strlen(table->dbt_name) + 1);
 	if (table->dbt_id_space)
 		id_space_destroy(table->dbt_id_space);
-	kmem_cache_destroy(table->dbt_mem_cache);
+	table->dbt_mem_cache = NULL;
 	kmem_free(table, sizeof (rfs4_table_t));
 }
 
@@ -683,11 +747,13 @@ retry:
 boolean_t
 rfs4_cpr_callb(void *arg, int code)
 {
-	rfs4_table_t *table = rfs4_client_tab;
 	rfs4_bucket_t *buckets, *bp;
 	rfs4_link_t *l;
 	rfs4_client_t *cp;
 	int i;
+
+	nfs4_srv_t *nsrv4 = zone_getspecific(rfs4_zone_key, curzone);
+	rfs4_table_t *table = nsrv4->rfs4_client_tab;
 
 	/*
 	 * We get called for Suspend and Resume events.
@@ -775,25 +841,32 @@ rfs4_dbe_reap(rfs4_table_t *table, time_t cache_time, uint32_t desired)
 
 	/* Walk the buckets looking for entries to release/destroy */
 	for (i = 0; i < table->dbt_len; i++) {
+		int retries = 0;
 		bp = &buckets[i];
 		do {
 			found = FALSE;
 			rw_enter(bp->dbk_lock, RW_READER);
 			for (l = bp->dbk_head; l; l = l->next) {
 				entry = l->entry;
+				mutex_enter(entry->dbe_lock);
+				ASSERT(entry->dbe_refcnt != 0);
 				/*
 				 * Examine an entry.  Ref count of 1 means
 				 * that the only reference is for the hash
 				 * table reference.
 				 */
-				if (entry->dbe_refcnt != 1)
+				if (entry->dbe_refcnt != 1) {
+#ifdef DEBUG
+					rfs4_dbe_debug(entry);
+#endif
+					mutex_exit(entry->dbe_lock);
 					continue;
-				mutex_enter(entry->dbe_lock);
+				}
 				if ((entry->dbe_refcnt == 1) &&
 				    (table->dbt_reaper_shutdown ||
 				    table->dbt_expiry == NULL ||
 				    (*table->dbt_expiry)(entry->dbe_data))) {
-					entry->dbe_refcnt--;
+					rfs4_dbe_rele_nolock(entry);
 					count++;
 					found = TRUE;
 				}
@@ -810,13 +883,16 @@ rfs4_dbe_reap(rfs4_table_t *table, time_t cache_time, uint32_t desired)
 					t = l;
 					entry = t->entry;
 					l = l->next;
+					mutex_enter(entry->dbe_lock);
 					if (entry->dbe_refcnt == 0) {
 						DEQUEUE(bp->dbk_head, t);
+						mutex_exit(entry->dbe_lock);
 						t->next = NULL;
 						t->prev = NULL;
 						INVALIDATE_ADDR(t->entry);
 						rfs4_dbe_destroy(entry);
-					}
+					} else
+						mutex_exit(entry->dbe_lock);
 				}
 			}
 			rw_exit(bp->dbk_lock);
@@ -829,13 +905,15 @@ rfs4_dbe_reap(rfs4_table_t *table, time_t cache_time, uint32_t desired)
 			 * released.  This is only done in the
 			 * instance that the tables are being shut down.
 			 */
-			if (table->dbt_reaper_shutdown && bp->dbk_head != NULL)
+			if (table->dbt_reaper_shutdown && bp->dbk_head != NULL) {
 				delay(hz/100);
+				retries++;
+			}
 		/*
 		 * If this is a table shutdown, keep going until
 		 * everything is gone
 		 */
-		} while (table->dbt_reaper_shutdown && bp->dbk_head != NULL);
+		} while (table->dbt_reaper_shutdown && bp->dbk_head != NULL && retries < 5);
 
 		if (!table->dbt_reaper_shutdown && desired && count >= desired)
 			break;
@@ -879,6 +957,7 @@ reaper_thread(caddr_t *arg)
 	table->dbt_db->db_shutdown_count--;
 	cv_signal(&table->dbt_db->db_shutdown_wait);
 	mutex_exit(table->dbt_db->db_lock);
+	zthread_exit();
 }
 
 static void
@@ -887,7 +966,7 @@ rfs4_start_reaper(rfs4_table_t *table)
 	if (table->dbt_max_cache_time == 0)
 		return;
 
-	(void) thread_create(NULL, 0, reaper_thread, table, 0, &p0, TS_RUN,
+	(void) zthread_create(NULL, 0, reaper_thread, table, 0,
 	    minclsyspri);
 }
 

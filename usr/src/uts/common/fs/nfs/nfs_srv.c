@@ -18,15 +18,21 @@
  *
  * CDDL HEADER END
  */
+
 /*
  * Copyright (c) 1994, 2010, Oracle and/or its affiliates. All rights reserved.
- * Copyright 2014 Nexenta Systems, Inc.  All rights reserved.
+ * Copyright 2015 Nexenta Systems, Inc.  All rights reserved.
  * Copyright (c) 2016 by Delphix. All rights reserved.
  */
 
 /*
  *	Copyright (c) 1983,1984,1985,1986,1987,1988,1989  AT&T.
  *	All rights reserved.
+ */
+
+/*
+ * Copyright 2018 Nexenta Systems, Inc.
+ * Copyright (c) 2016 by Delphix. All rights reserved.
  */
 
 #include <sys/param.h>
@@ -69,6 +75,21 @@
 
 #include <sys/strsubr.h>
 
+struct rfs_async_write_list;
+
+/*
+ * Zone globals of NFSv2 server
+ */
+typedef struct nfs_srv {
+	kmutex_t			async_write_lock;
+	struct rfs_async_write_list	*async_write_head;
+
+	/*
+	 * enables write clustering if == 1
+	 */
+	int		write_async;
+} nfs_srv_t;
+
 /*
  * These are the interface routines for the server side of the
  * Network File System.  See the NFS version 2 protocol specification
@@ -78,6 +99,9 @@
 static int	sattr_to_vattr(struct nfssattr *, struct vattr *);
 static void	acl_perm(struct vnode *, struct exportinfo *, struct vattr *,
 			cred_t *);
+static void	*rfs_zone_init(zoneid_t zoneid);
+static void	rfs_zone_fini(zoneid_t zoneid, void *data);
+
 
 /*
  * Some "over the wire" UNIX file types.  These are encoded
@@ -89,6 +113,7 @@ static void	acl_perm(struct vnode *, struct exportinfo *, struct vattr *,
 #define	IFSOCK		0140000		/* socket */
 
 u_longlong_t nfs2_srv_caller_id;
+static zone_key_t rfs_zone_key;
 
 /*
  * Get file attributes.
@@ -329,6 +354,80 @@ rfs_setattr_getfh(struct nfssaargs *args)
 	return (&args->saa_fh);
 }
 
+/* Change and release @exip and @vpp only in success */
+int
+rfs_cross_mnt(vnode_t **vpp, struct exportinfo **exip)
+{
+	struct exportinfo *exi;
+	vnode_t *vp = *vpp;
+	fid_t fid;
+	int error;
+
+	VN_HOLD(vp);
+
+	if ((error = traverse(&vp)) != 0) {
+		VN_RELE(vp);
+		return (error);
+	}
+
+	bzero(&fid, sizeof (fid));
+	fid.fid_len = MAXFIDSZ;
+	error = VOP_FID(vp, &fid, NULL);
+	if (error) {
+		VN_RELE(vp);
+		return (error);
+	}
+
+	exi = checkexport(&vp->v_vfsp->vfs_fsid, &fid);
+	if (exi == NULL ||
+	    (exi->exi_export.ex_flags & EX_NOHIDE) == 0) {
+		/*
+		 * It is not error, just subdir is not exported
+		 * or "nohide" is not set
+		 */
+		if (exi != NULL)
+			exi_rele(exi);
+		VN_RELE(vp);
+	} else {
+		/* go to submount */
+		exi_rele(*exip);
+		*exip = exi;
+
+		VN_RELE(*vpp);
+		*vpp = vp;
+	}
+
+	return (0);
+}
+
+/*
+ * Given mounted "dvp" and "exi", go upper mountpoint
+ * with dvp/exi correction
+ * Return 0 in success
+ */
+int
+rfs_climb_crossmnt(vnode_t **dvpp, struct exportinfo **exip, cred_t *cr)
+{
+	struct exportinfo *exi;
+	vnode_t *dvp = *dvpp;
+
+	ASSERT(dvp->v_flag & VROOT);
+
+	VN_HOLD(dvp);
+	dvp = untraverse(dvp);
+	exi = nfs_vptoexi(NULL, dvp, cr, NULL, NULL, FALSE);
+	if (exi == NULL) {
+		VN_RELE(dvp);
+		return (-1);
+	}
+
+	exi_rele(*exip);
+	*exip = exi;
+	VN_RELE(*dvpp);
+	*dvpp = dvp;
+
+	return (0);
+}
 /*
  * Directory lookup.
  * Returns an fhandle and file attributes for file name in a directory.
@@ -371,7 +470,7 @@ rfs_lookup(struct nfsdiropargs *da, struct nfsdiropres *dr,
 	 * location of the public filehandle.
 	 */
 	if (exi != NULL && (exi->exi_export.ex_flags & EX_PUBLIC)) {
-		dvp = rootdir;
+		dvp = ZONE_ROOTVP();
 		VN_HOLD(dvp);
 	} else {
 		dvp = nfs_fhtovp(fhp, exi);
@@ -381,6 +480,8 @@ rfs_lookup(struct nfsdiropargs *da, struct nfsdiropres *dr,
 		}
 	}
 
+	exi_hold(exi);
+
 	/*
 	 * Not allow lookup beyond root.
 	 * If the filehandle matches a filehandle of the exi,
@@ -388,9 +489,19 @@ rfs_lookup(struct nfsdiropargs *da, struct nfsdiropres *dr,
 	 */
 	if (strcmp(da->da_name, "..") == 0 &&
 	    EQFID(&exi->exi_fid, (fid_t *)&fhp->fh_len)) {
-		VN_RELE(dvp);
-		dr->dr_status = NFSERR_NOENT;
-		return;
+		if ((exi->exi_export.ex_flags & EX_NOHIDE) &&
+		    (dvp->v_flag & VROOT)) {
+			/*
+			 * special case for ".." and 'nohide'exported root
+			 */
+			if (rfs_climb_crossmnt(&dvp, &exi, cr) != 0) {
+				error = NFSERR_ACCES;
+				goto out;
+			}
+		} else  {
+			error = NFSERR_NOENT;
+			goto out;
+		}
 	}
 
 	ca = (struct sockaddr *)svc_getrpccaller(req->rq_xprt)->buf;
@@ -398,8 +509,8 @@ rfs_lookup(struct nfsdiropargs *da, struct nfsdiropres *dr,
 	    MAXPATHLEN);
 
 	if (name == NULL) {
-		dr->dr_status = NFSERR_ACCES;
-		return;
+		error = NFSERR_ACCES;
+		goto out;
 	}
 
 	/*
@@ -413,6 +524,9 @@ rfs_lookup(struct nfsdiropargs *da, struct nfsdiropres *dr,
 	 */
 	if (PUBLIC_FH2(fhp)) {
 		publicfh_flag = TRUE;
+
+		exi_rele(exi);
+
 		error = rfs_publicfh_mclookup(name, dvp, cr, &vp, &exi,
 		    &sec);
 	} else {
@@ -426,6 +540,11 @@ rfs_lookup(struct nfsdiropargs *da, struct nfsdiropres *dr,
 	if (name != da->da_name)
 		kmem_free(name, MAXPATHLEN);
 
+	if (error == 0 && vn_ismntpt(vp)) {
+		error = rfs_cross_mnt(&vp, &exi);
+		if (error)
+			VN_RELE(vp);
+	}
 
 	if (!error) {
 		va.va_mask = AT_ALL;	/* we want everything */
@@ -452,15 +571,10 @@ rfs_lookup(struct nfsdiropargs *da, struct nfsdiropres *dr,
 		VN_RELE(vp);
 	}
 
+out:
 	VN_RELE(dvp);
 
-	/*
-	 * If publicfh_flag is true then we have called rfs_publicfh_mclookup
-	 * and have obtained a new exportinfo in exi which needs to be
-	 * released. Note the the original exportinfo pointed to by exi
-	 * will be released by the caller, comon_dispatch.
-	 */
-	if (publicfh_flag && exi != NULL)
+	if (exi != NULL)
 		exi_rele(exi);
 
 	/*
@@ -685,6 +799,8 @@ rfs_read(struct nfsreadargs *ra, struct nfsrdresult *rr,
 
 	/* check if a monitor detected a delegation conflict */
 	if (error == EAGAIN && (ct.cc_flags & CC_WOULDBLOCK)) {
+		if (in_crit)
+			nbl_end_crit(vp);
 		VN_RELE(vp);
 		/* mark as wouldblock so response is dropped */
 		curthread->t_flag |= T_WOULDBLOCK;
@@ -1010,10 +1126,7 @@ rfs_write_sync(struct nfswriteargs *wa, struct nfsattrstat *ns,
 
 	/* check if a monitor detected a delegation conflict */
 	if (error == EAGAIN && (ct.cc_flags & CC_WOULDBLOCK)) {
-		VN_RELE(vp);
-		/* mark as wouldblock so response is dropped */
-		curthread->t_flag |= T_WOULDBLOCK;
-		return;
+		goto out;
 	}
 
 	if (wa->wa_data || wa->wa_rlist) {
@@ -1053,6 +1166,7 @@ rfs_write_sync(struct nfswriteargs *wa, struct nfsattrstat *ns,
 		error = VOP_WRITE(vp, &uio, FSYNC, cr, &ct);
 		curthread->t_cred = savecred;
 	} else {
+
 		iovcnt = 0;
 		for (m = wa->wa_mblk; m != NULL; m = m->b_cont)
 			iovcnt++;
@@ -1196,8 +1310,10 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	cred_t *savecred;
 	int in_crit = 0;
 	caller_context_t ct;
+	nfs_srv_t *nsrv;
 
-	if (!rfs_write_async) {
+	nsrv = zone_getspecific(rfs_zone_key, curzone);
+	if (!nsrv->write_async) {
 		rfs_write_sync(wa, ns, exi, req, cr, ro);
 		return;
 	}
@@ -1222,8 +1338,8 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	 * Look to see if there is already a cluster started
 	 * for this file.
 	 */
-	mutex_enter(&rfs_async_write_lock);
-	for (lp = rfs_async_write_head; lp != NULL; lp = lp->next) {
+	mutex_enter(&nsrv->async_write_lock);
+	for (lp = nsrv->async_write_head; lp != NULL; lp = lp->next) {
 		if (bcmp(&wa->wa_fhandle, lp->fhp,
 		    sizeof (fhandle_t)) == 0)
 			break;
@@ -1249,8 +1365,8 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 		else
 			trp->list = nrp;
 		while (nrp->ns->ns_status == RFSWRITE_INITVAL)
-			cv_wait(&lp->cv, &rfs_async_write_lock);
-		mutex_exit(&rfs_async_write_lock);
+			cv_wait(&lp->cv, &nsrv->async_write_lock);
+		mutex_exit(&nsrv->async_write_lock);
 
 		return;
 	}
@@ -1267,15 +1383,15 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	nlp->list = nrp;
 	nlp->next = NULL;
 
-	if (rfs_async_write_head == NULL) {
-		rfs_async_write_head = nlp;
+	if (nsrv->async_write_head == NULL) {
+		nsrv->async_write_head = nlp;
 	} else {
-		lp = rfs_async_write_head;
+		lp = nsrv->async_write_head;
 		while (lp->next != NULL)
 			lp = lp->next;
 		lp->next = nlp;
 	}
-	mutex_exit(&rfs_async_write_lock);
+	mutex_exit(&nsrv->async_write_lock);
 
 	/*
 	 * Convert the file handle common to all of the requests
@@ -1283,11 +1399,11 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	 */
 	vp = nfs_fhtovp(&wa->wa_fhandle, exi);
 	if (vp == NULL) {
-		mutex_enter(&rfs_async_write_lock);
-		if (rfs_async_write_head == nlp)
-			rfs_async_write_head = nlp->next;
+		mutex_enter(&nsrv->async_write_lock);
+		if (nsrv->async_write_head == nlp)
+			nsrv->async_write_head = nlp->next;
 		else {
-			lp = rfs_async_write_head;
+			lp = nsrv->async_write_head;
 			while (lp->next != nlp)
 				lp = lp->next;
 			lp->next = nlp->next;
@@ -1298,7 +1414,7 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 			rp->thread->t_flag |= t_flag;
 		}
 		cv_broadcast(&nlp->cv);
-		mutex_exit(&rfs_async_write_lock);
+		mutex_exit(&nsrv->async_write_lock);
 
 		return;
 	}
@@ -1309,11 +1425,11 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	 */
 	if (vp->v_type != VREG) {
 		VN_RELE(vp);
-		mutex_enter(&rfs_async_write_lock);
-		if (rfs_async_write_head == nlp)
-			rfs_async_write_head = nlp->next;
+		mutex_enter(&nsrv->async_write_lock);
+		if (nsrv->async_write_head == nlp)
+			nsrv->async_write_head = nlp->next;
 		else {
-			lp = rfs_async_write_head;
+			lp = nsrv->async_write_head;
 			while (lp->next != nlp)
 				lp = lp->next;
 			lp->next = nlp->next;
@@ -1324,7 +1440,7 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 			rp->thread->t_flag |= t_flag;
 		}
 		cv_broadcast(&nlp->cv);
-		mutex_exit(&rfs_async_write_lock);
+		mutex_exit(&nsrv->async_write_lock);
 
 		return;
 	}
@@ -1356,11 +1472,11 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 		VN_RELE(vp);
 		/* mark as wouldblock so response is dropped */
 		curthread->t_flag |= T_WOULDBLOCK;
-		mutex_enter(&rfs_async_write_lock);
-		if (rfs_async_write_head == nlp)
-			rfs_async_write_head = nlp->next;
+		mutex_enter(&nsrv->async_write_lock);
+		if (nsrv->async_write_head == nlp)
+			nsrv->async_write_head = nlp->next;
 		else {
-			lp = rfs_async_write_head;
+			lp = nsrv->async_write_head;
 			while (lp->next != nlp)
 				lp = lp->next;
 			lp->next = nlp->next;
@@ -1372,7 +1488,7 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 			}
 		}
 		cv_broadcast(&nlp->cv);
-		mutex_exit(&rfs_async_write_lock);
+		mutex_exit(&nsrv->async_write_lock);
 
 		return;
 	}
@@ -1394,16 +1510,16 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	 * will allow more requests to be clustered in this
 	 * second cluster.
 	 */
-	mutex_enter(&rfs_async_write_lock);
-	if (rfs_async_write_head == nlp)
-		rfs_async_write_head = nlp->next;
+	mutex_enter(&nsrv->async_write_lock);
+	if (nsrv->async_write_head == nlp)
+		nsrv->async_write_head = nlp->next;
 	else {
-		lp = rfs_async_write_head;
+		lp = nsrv->async_write_head;
 		while (lp->next != nlp)
 			lp = lp->next;
 		lp->next = nlp->next;
 	}
-	mutex_exit(&rfs_async_write_lock);
+	mutex_exit(&nsrv->async_write_lock);
 
 	/*
 	 * Step through the list of requests in this cluster.
@@ -1648,7 +1764,7 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 	VN_RELE(vp);
 
 	t_flag = curthread->t_flag & T_WOULDBLOCK;
-	mutex_enter(&rfs_async_write_lock);
+	mutex_enter(&nsrv->async_write_lock);
 	for (rp = nlp->list; rp != NULL; rp = rp->list) {
 		if (rp->ns->ns_status == RFSWRITE_INITVAL) {
 			rp->ns->ns_status = puterrno(error);
@@ -1656,7 +1772,7 @@ rfs_write(struct nfswriteargs *wa, struct nfsattrstat *ns,
 		}
 	}
 	cv_broadcast(&nlp->cv);
-	mutex_exit(&rfs_async_write_lock);
+	mutex_exit(&nsrv->async_write_lock);
 
 }
 
@@ -2121,7 +2237,7 @@ rfs_rename(struct nfsrnmargs *args, enum nfsstat *status,
 
 	/* Check for delegation on the file being renamed over, if it exists */
 
-	if (rfs4_deleg_policy != SRV_NEVER_DELEGATE &&
+	if (nfs4_get_deleg_policy() != SRV_NEVER_DELEGATE &&
 	    VOP_LOOKUP(tovp, args->rna_to.da_name, &targvp, NULL, 0, NULL, cr,
 	    NULL, NULL, NULL) == 0) {
 
@@ -2488,7 +2604,7 @@ rfs_rmdir(struct nfsdiropargs *da, enum nfsstat *status,
 	 * supplying a vnode known to exist and illegal to
 	 * remove.
 	 */
-	error = VOP_RMDIR(vp, da->da_name, rootdir, cr, NULL, 0);
+	error = VOP_RMDIR(vp, da->da_name, ZONE_ROOTVP(), cr, NULL, 0);
 
 	/*
 	 * Force modified data and metadata out to stable storage.
@@ -2763,7 +2879,7 @@ sattr_to_vattr(struct nfssattr *sa, struct vattr *vap)
 	return (0);
 }
 
-static enum nfsftype vt_to_nf[] = {
+static const enum nfsftype vt_to_nf[] = {
 	0, NFREG, NFDIR, NFBLK, NFCHR, NFLNK, 0, 0, 0, NFSOC, 0
 };
 
@@ -2982,14 +3098,38 @@ acl_perm(struct vnode *vp, struct exportinfo *exi, struct vattr *va, cred_t *cr)
 void
 rfs_srvrinit(void)
 {
-	mutex_init(&rfs_async_write_lock, NULL, MUTEX_DEFAULT, NULL);
 	nfs2_srv_caller_id = fs_new_caller_id();
+	zone_key_create(&rfs_zone_key, rfs_zone_init, NULL, rfs_zone_fini);
 }
 
 void
 rfs_srvrfini(void)
 {
-	mutex_destroy(&rfs_async_write_lock);
+}
+
+/* ARGSUSED */
+static void *
+rfs_zone_init(zoneid_t zoneid)
+{
+	nfs_srv_t *ns;
+
+	ns = kmem_zalloc(sizeof (*ns), KM_SLEEP);
+
+	mutex_init(&ns->async_write_lock, NULL, MUTEX_DEFAULT, NULL);
+	ns->write_async = 1;
+
+	return (ns);
+}
+
+/* ARGSUSED */
+static void
+rfs_zone_fini(zoneid_t zoneid, void *data)
+{
+	nfs_srv_t *ns;
+
+	ns = (nfs_srv_t *)data;
+	mutex_destroy(&ns->async_write_lock);
+	kmem_free(ns, sizeof (*ns));
 }
 
 static int

@@ -18,11 +18,18 @@
  *
  * CDDL HEADER END
  */
+
 /*
  * Copyright (c) 1986, 2010, Oracle and/or its affiliates. All rights reserved.
- *
+ */
+
+/*
  *  	Copyright (c) 1983,1984,1985,1986,1987,1988,1989  AT&T.
  *	All rights reserved.
+ */
+
+/*
+ * Copyright 2018 Nexenta Systems, Inc.
  */
 
 #include <sys/param.h>
@@ -60,6 +67,7 @@
 
 #include <nfs/nfs.h>
 #include <nfs/nfs_clnt.h>
+#include <nfs/nfs_cmd.h>
 
 #include <nfs/rnode.h>
 #include <nfs/nfs_acl.h>
@@ -2827,6 +2835,8 @@ nfs_clntinit(void)
 
 	nfs4_clnt_init();
 
+	nfscmd_init();
+
 #ifdef DEBUG
 	nfs_clntup = B_TRUE;
 #endif
@@ -2846,6 +2856,7 @@ nfs_clntfini(void)
 	nfs_subrfini();
 	nfs_vfsfini();
 	nfs4_clnt_fini();
+	nfscmd_fini();
 }
 
 /*
