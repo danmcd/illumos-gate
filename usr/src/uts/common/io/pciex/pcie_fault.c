@@ -20,6 +20,7 @@
  */
 /*
  * Copyright (c) 2006, 2010, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, Joyent, Inc.
  */
 
 #include <sys/sysmacros.h>
@@ -919,10 +920,18 @@ pf_default_hdl(dev_info_t *dip, pf_impl_t *impl)
 	}
 
 	/*
-	 * Read vendor/device ID and check with cached data, if it doesn't match
-	 * could very well be a device that isn't responding anymore.  Just
-	 * stop.  Save the basic info in the error q for post mortem debugging
-	 * purposes.
+	 * If this is a device used for PCI passthrough into a virtual machine,
+	 * don't let any error it caused panic the system.
+	 */
+	if (bus_p->bus_fm_flags & PF_FM_IS_PASSTHRU)
+		pfd_p->pe_severity_mask |= PF_ERR_PANIC;
+
+	/*
+	 * Read vendor/device ID and check with cached data; if it doesn't
+	 * match, it could very well mean that the device is no longer
+	 * responding.  In this case, we return PF_SCAN_BAD_RESPONSE; should
+	 * the caller choose to panic in this case, we will have the basic
+	 * info in the error queue for the purposes of postmortem debugging.
 	 */
 	if (PCIE_GET(32, bus_p, PCI_CONF_VENID) != bus_p->bus_dev_ven_id) {
 		char buf[FM_MAX_CLASS];
@@ -933,12 +942,12 @@ pf_default_hdl(dev_info_t *dip, pf_impl_t *impl)
 		    DDI_NOSLEEP, FM_VERSION, DATA_TYPE_UINT8, 0, NULL);
 
 		/*
-		 * For IOV/Hotplug purposes skip gathering info fo this device,
+		 * For IOV/Hotplug purposes skip gathering info for this device,
 		 * but populate affected info and severity.  Clear out any data
 		 * that maybe been saved in the last fabric scan.
 		 */
 		pf_reset_pfd(pfd_p);
-		pfd_p->pe_severity_flags = PF_ERR_PANIC_BAD_RESPONSE;
+		pfd_p->pe_severity_flags = PF_ERR_BAD_RESPONSE;
 		PFD_AFFECTED_DEV(pfd_p)->pe_affected_flags = PF_AFFECTED_SELF;
 
 		/* Add the snapshot to the error q */
@@ -950,6 +959,7 @@ pf_default_hdl(dev_info_t *dip, pf_impl_t *impl)
 
 	pf_pci_regs_gather(pfd_p, bus_p);
 	pf_pci_regs_clear(pfd_p, bus_p);
+
 	if (PCIE_IS_RP(bus_p))
 		pf_pci_find_rp_fault(pfd_p, bus_p);
 
@@ -981,6 +991,22 @@ done:
 
 	pfd_p->pe_valid = B_TRUE;
 	return (scan_flag);
+}
+
+/*
+ * Set the passthru flag on a device bus_p. Called by passthru drivers to
+ * indicate when a device is or is no longer under passthru control.
+ */
+void
+pf_set_passthru(dev_info_t *dip, boolean_t is_passthru)
+{
+	pcie_bus_t *bus_p = PCIE_DIP2BUS(dip);
+
+	if (is_passthru) {
+		atomic_or_uint(&bus_p->bus_fm_flags, PF_FM_IS_PASSTHRU);
+	} else {
+		atomic_and_uint(&bus_p->bus_fm_flags, ~PF_FM_IS_PASSTHRU);
+	}
 }
 
 /*
@@ -1026,7 +1052,7 @@ pf_init(dev_info_t *dip, ddi_iblock_cookie_t ibc, ddi_attach_cmd_t cmd)
 		    DDI_FM_EREPORT_CAPABLE | DDI_FM_ERRCB_CAPABLE);
 		cap &= (DDI_FM_EREPORT_CAPABLE | DDI_FM_ERRCB_CAPABLE);
 
-		bus_p->bus_fm_flags |= PF_FM_IS_NH;
+		atomic_or_uint(&bus_p->bus_fm_flags, PF_FM_IS_NH);
 
 		if (cmd == DDI_ATTACH) {
 			ddi_fm_init(dip, &cap, &ibc);
@@ -1041,7 +1067,7 @@ pf_init(dev_info_t *dip, ddi_iblock_cookie_t ibc, ddi_attach_cmd_t cmd)
 
 	/* If ddi_fm_init fails for any reason RETURN */
 	if (!fmhdl) {
-		bus_p->bus_fm_flags = 0;
+		(void) atomic_swap_uint(&bus_p->bus_fm_flags, 0);
 		return;
 	}
 
@@ -1051,7 +1077,7 @@ pf_init(dev_info_t *dip, ddi_iblock_cookie_t ibc, ddi_attach_cmd_t cmd)
 			ddi_fm_handler_register(dip, pf_dummy_cb, NULL);
 	}
 
-	bus_p->bus_fm_flags |= PF_FM_READY;
+	atomic_or_uint(&bus_p->bus_fm_flags, PF_FM_READY);
 }
 
 /* undo FMA lock, called at predetach */
@@ -1068,7 +1094,7 @@ pf_fini(dev_info_t *dip, ddi_detach_cmd_t cmd)
 		return;
 
 	/* no other code should set the flag to false */
-	bus_p->bus_fm_flags &= ~PF_FM_READY;
+	atomic_and_uint(&bus_p->bus_fm_flags, ~PF_FM_READY);
 
 	/*
 	 * Grab the mutex to make sure device isn't in the middle of
@@ -1082,7 +1108,7 @@ pf_fini(dev_info_t *dip, ddi_detach_cmd_t cmd)
 	/* undo non-hardened drivers */
 	if (bus_p->bus_fm_flags & PF_FM_IS_NH) {
 		if (cmd == DDI_DETACH) {
-			bus_p->bus_fm_flags &= ~PF_FM_IS_NH;
+			atomic_and_uint(&bus_p->bus_fm_flags, ~PF_FM_IS_NH);
 			pci_ereport_teardown(dip);
 			/*
 			 * ddi_fini itself calls ddi_handler_unregister,
@@ -1379,7 +1405,7 @@ pf_analyse_error(ddi_fm_error_t *derr, pf_impl_t *impl)
 		sts_flags = 0;
 
 		/* skip analysing error when no error info is gathered */
-		if (pfd_p->pe_severity_flags == PF_ERR_PANIC_BAD_RESPONSE)
+		if (pfd_p->pe_severity_flags == PF_ERR_BAD_RESPONSE)
 			goto done;
 
 		switch (PCIE_PFD2BUS(pfd_p)->bus_dev_type) {
@@ -1456,6 +1482,8 @@ done:
 		pfd_p->pe_orig_severity_flags = pfd_p->pe_severity_flags;
 		/* Have pciev_eh adjust the severity */
 		pfd_p->pe_severity_flags = pciev_eh(pfd_p, impl);
+
+		pfd_p->pe_severity_flags &= ~pfd_p->pe_severity_mask;
 
 		error_flags |= pfd_p->pe_severity_flags;
 	}
@@ -3060,6 +3088,7 @@ pf_reset_pfd(pf_data_t *pfd_p)
 	pcie_bus_t	*bus_p = PCIE_PFD2BUS(pfd_p);
 
 	pfd_p->pe_severity_flags = 0;
+	pfd_p->pe_severity_mask = 0;
 	pfd_p->pe_orig_severity_flags = 0;
 	/* pe_lock and pe_valid were reset in pf_send_ereport */
 
