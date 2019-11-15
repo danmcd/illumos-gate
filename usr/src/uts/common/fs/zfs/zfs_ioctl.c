@@ -28,7 +28,7 @@
  * Portions Copyright 2011 Martin Matuska
  * Copyright 2015, OmniTI Computer Consulting, Inc. All rights reserved.
  * Copyright 2018 Nexenta Systems, Inc.  All rights reserved.
- * Copyright (c) 2014, 2016 Joyent, Inc. All rights reserved.
+ * Copyright 2019 Joyent, Inc.
  * Copyright (c) 2011, 2017 by Delphix. All rights reserved.
  * Copyright (c) 2013 by Saso Kiselkov. All rights reserved.
  * Copyright (c) 2013 Steven Hartland. All rights reserved.
@@ -5665,7 +5665,7 @@ zfs_ioc_next_obj(zfs_cmd_t *zc)
 	objset_t *os = NULL;
 	int error;
 
-	error = dmu_objset_hold_flags(zc->zc_name, B_TRUE, FTAG, &os);
+	error = dmu_objset_hold(zc->zc_name, FTAG, &os);
 	if (error != 0)
 		return (error);
 
