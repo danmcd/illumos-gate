@@ -32,8 +32,6 @@ all:
 
 clean:
 
-lint:
-
 include $(SRC)/cmd/Makefile.targ
 
 install: all $(ROOTNFSDTRACEDIR) .WAIT $(ROOTNFSDTRACEFILE)
