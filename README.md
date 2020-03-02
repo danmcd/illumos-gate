@@ -1,3 +1,7 @@
+NOTE:  This nfs-zone branch of illumos-gate is here to preserve incremental
+commits from the development of NFS Server for Zones (IPD 11, [illumos 11083]
+(https://illumos.org/issues/11083/). This branch should be treated as read-only.
+
 # illumos-gate
 
 This is the core [illumos](https://illumos.org) source tree.
