@@ -1453,6 +1453,12 @@ mlxcx_sq_ring_dbell(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq, uint_t first)
 	ASSERT3U(mlwq->mlwq_type, ==, MLXCX_WQ_TYPE_SENDQ);
 	ASSERT(mutex_owned(&mlwq->mlwq_mtx));
 
+	/*
+	 * Make sure all prior stores are flushed out before we update the
+	 * counter: hardware can immediately start executing after this write
+	 * (the doorbell below just makes sure it's awake)
+	 */
+	membar_producer();
 	mlwq->mlwq_doorbell->mlwqd_send_counter = to_be16(mlwq->mlwq_pc);
 
 	ASSERT(mlwq->mlwq_cq != NULL);
