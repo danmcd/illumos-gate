@@ -13,6 +13,7 @@
  * Copyright (c) 2021, the University of Queensland
  * Copyright 2020 RackTop Systems, Inc.
  * Copyright 2023 MNX Cloud, Inc.
+ * Copyright 2023 Oxide Computer Company
  */
 
 /*
@@ -29,6 +30,7 @@
 #include <sys/dlpi.h>
 
 #include <sys/mac_provider.h>
+#include <sys/mac_ether.h>
 
 /* Need these for mac_vlan_header_info() */
 #include <sys/mac_client.h>
@@ -200,6 +202,119 @@ mlxcx_link_fec_cap(link_fec_t fec, mlxcx_pplm_fec_caps_t *pfecp)
 	return (B_TRUE);
 }
 
+static mac_ether_media_t
+mlxcx_mac_media(mlxcx_port_t *port)
+{
+	switch (port->mlp_oper_status) {
+	case MLXCX_PORT_STATUS_UP:
+	case MLXCX_PORT_STATUS_UP_ONCE:
+		break;
+	case MLXCX_PORT_STATUS_DOWN:
+		return (ETHER_MEDIA_NONE);
+	case MLXCX_PORT_STATUS_DISABLED:
+		return (ETHER_MEDIA_UNKNOWN);
+	}
+
+	switch (port->mlp_oper_proto) {
+	case MLXCX_PROTO_SGMII:
+		return (ETHER_MEDIA_1000_SGMII);
+	case MLXCX_PROTO_1000BASE_KX:
+		return (ETHER_MEDIA_1000BASE_KX);
+	case MLXCX_PROTO_10GBASE_CX4:
+		return (ETHER_MEDIA_10GBASE_CX4);
+	case MLXCX_PROTO_10GBASE_KX4:
+		return (ETHER_MEDIA_10GBASE_KX4);
+	case MLXCX_PROTO_10GBASE_KR:
+		return (ETHER_MEDIA_10GBASE_KR);
+	case MLXCX_PROTO_40GBASE_CR4:
+		return (ETHER_MEDIA_40GBASE_CR4);
+	case MLXCX_PROTO_40GBASE_KR4:
+		return (ETHER_MEDIA_40GBASE_KR4);
+	case MLXCX_PROTO_SGMII_100BASE:
+		return (ETHER_MEDIA_100_SGMII);
+	case MLXCX_PROTO_10GBASE_CR:
+		return (ETHER_MEDIA_10GBASE_CR);
+	case MLXCX_PROTO_10GBASE_SR:
+		return (ETHER_MEDIA_10GBASE_SR);
+	case MLXCX_PROTO_10GBASE_ER_LR:
+		return (ETHER_MEDIA_10GBASE_LR);
+	case MLXCX_PROTO_40GBASE_SR4:
+		return (ETHER_MEDIA_40GBASE_SR4);
+	case MLXCX_PROTO_40GBASE_LR4_ER4:
+		return (ETHER_MEDIA_40GBASE_LR4);
+	case MLXCX_PROTO_50GBASE_SR2:
+		return (ETHER_MEDIA_50GBASE_SR2);
+	case MLXCX_PROTO_100GBASE_CR4:
+		return (ETHER_MEDIA_100GBASE_CR4);
+	case MLXCX_PROTO_100GBASE_SR4:
+		return (ETHER_MEDIA_100GBASE_SR4);
+	case MLXCX_PROTO_100GBASE_KR4:
+		return (ETHER_MEDIA_100GBASE_KR4);
+	case MLXCX_PROTO_25GBASE_CR:
+		return (ETHER_MEDIA_25GBASE_CR);
+	case MLXCX_PROTO_25GBASE_KR:
+		return (ETHER_MEDIA_25GBASE_KR);
+	case MLXCX_PROTO_25GBASE_SR:
+		return (ETHER_MEDIA_25GBASE_SR);
+	case MLXCX_PROTO_50GBASE_CR2:
+		return (ETHER_MEDIA_50GBASE_CR2);
+	case MLXCX_PROTO_50GBASE_KR2:
+		return (ETHER_MEDIA_50GBASE_KR2);
+	default:
+		/* FALLTHRU */
+		break;
+	}
+
+	switch (port->mlp_ext_oper_proto) {
+	case MLXCX_EXTPROTO_SGMII_100BASE:
+		return (ETHER_MEDIA_100_SGMII);
+	case MLXCX_EXTPROTO_1000BASE_X_SGMII:
+		return (ETHER_MEDIA_1000_SGMII);
+	case MLXCX_EXTPROTO_5GBASE_R:
+		return (ETHER_MEDIA_5000BASE_KR); /* XXX KEBE ASKS use _KR ? */
+	case MLXCX_EXTPROTO_10GBASE_XFI_XAUI_1:
+		return (ETHER_MEDIA_10G_XAUI);
+	case MLXCX_EXTPROTO_40GBASE_XLAUI_4_XLPPI_4:
+		return (ETHER_MEDIA_40G_XLPPI);
+	case MLXCX_EXTPROTO_25GAUI_1_25GBASE_CR_KR:
+		return (ETHER_MEDIA_25G_AUI);
+	case MLXCX_EXTPROTO_50GAUI_2_LAUI_2_50GBASE_CR2_KR2:
+	case MLXCX_EXTPROTO_50GAUI_1_LAUI_1_50GBASE_CR_KR:
+		/* No type for 50G AUI as far as I can see. */
+		return (ETHER_MEDIA_UNKNOWN);
+	case MLXCX_EXTPROTO_CAUI_4_100GBASE_CR4_KR4:
+		return (ETHER_MEDIA_100GBASE_CAUI4);
+	case MLXCX_EXTPROTO_100GAUI_2_100GBASE_CR2_KR2:
+	case MLXCX_EXTPROTO_100GAUI_1_100GBASE_CR_KR:
+		/* No type for 100G AUI as far as I can see. */
+		return (ETHER_MEDIA_UNKNOWN);
+	/*
+	 * NOTE: These report unsupported but keeping them in active code for
+	 * detection purposes.
+	 */
+	case MLXCX_EXTPROTO_200GAUI_4_200GBASE_CR4_KR4:
+		return (ETHER_MEDIA_200GAUI_4);
+	case MLXCX_EXTPROTO_200GAUI_2_200GBASE_CR2_KR2:
+		return (ETHER_MEDIA_200GAUI_2);
+	case MLXCX_EXTPROTO_400GAUI_8_400GBASE_CR8:
+		return (ETHER_MEDIA_400GAUI_8);
+	case MLXCX_EXTPROTO_400GAUI_4_400GBASE_CR4:
+		return (ETHER_MEDIA_400GAUI_4);
+	default:
+		/*
+		 * There ARE legitimate single-bit values we don't support,
+		 * and should just return 0 immediately.  We will ASSERT()
+		 * that it's a single-bit value, however.
+		 */
+		/* This check should work okay for 0 too. */
+		ASSERT0((uint32_t)port->mlp_ext_oper_proto &
+		    ((uint32_t)port->mlp_ext_oper_proto - 1U));
+		break;
+	}
+
+	return (ETHER_MEDIA_UNKNOWN);
+}
+
 static int
 mlxcx_mac_stat_rfc_2863(mlxcx_t *mlxp, mlxcx_port_t *port, uint_t stat,
     uint64_t *val)
@@ -339,6 +454,9 @@ mlxcx_mac_stat(void *arg, uint_t stat, uint64_t *val)
 		break;
 	case MAC_STAT_NORCVBUF:
 		*val = port->mlp_stats.mlps_rx_drops;
+		break;
+	case ETHER_STAT_XCVR_INUSE:
+		*val = (uint64_t)mlxcx_mac_media(port);
 		break;
 	default:
 		ret = ENOTSUP;
@@ -1452,6 +1570,9 @@ mlxcx_mac_getprop(void *arg, const char *pr_name, mac_prop_id_t pr_num,
 		default:
 			*(link_state_t *)pr_val = LINK_STATE_UNKNOWN;
 		}
+		break;
+	case MAC_PROP_MEDIA:
+		*(mac_ether_media_t *)pr_val = mlxcx_mac_media(port);
 		break;
 	case MAC_PROP_AUTONEG:
 		if (pr_valsize < sizeof (uint8_t)) {
