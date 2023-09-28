@@ -650,61 +650,6 @@ mlxcx_panic(mlxcx_t *mlxp, const char *fmt, ...)
 	va_end(ap);
 }
 
-uint16_t
-mlxcx_get16(mlxcx_t *mlxp, uintptr_t off)
-{
-	uintptr_t addr = off + (uintptr_t)mlxp->mlx_regs_base;
-	return (ddi_get16(mlxp->mlx_regs_handle, (void *)addr));
-}
-
-uint32_t
-mlxcx_get32(mlxcx_t *mlxp, uintptr_t off)
-{
-	uintptr_t addr = off + (uintptr_t)mlxp->mlx_regs_base;
-	return (ddi_get32(mlxp->mlx_regs_handle, (void *)addr));
-}
-
-uint64_t
-mlxcx_get64(mlxcx_t *mlxp, uintptr_t off)
-{
-	uintptr_t addr = off + (uintptr_t)mlxp->mlx_regs_base;
-	return (ddi_get64(mlxp->mlx_regs_handle, (void *)addr));
-}
-
-void
-mlxcx_put32(mlxcx_t *mlxp, uintptr_t off, uint32_t val)
-{
-	uintptr_t addr = off + (uintptr_t)mlxp->mlx_regs_base;
-	ddi_put32(mlxp->mlx_regs_handle, (void *)addr, val);
-}
-
-void
-mlxcx_put64(mlxcx_t *mlxp, uintptr_t off, uint64_t val)
-{
-	uintptr_t addr = off + (uintptr_t)mlxp->mlx_regs_base;
-	ddi_put64(mlxp->mlx_regs_handle, (void *)addr, val);
-}
-
-void
-mlxcx_uar_put32(mlxcx_t *mlxp, mlxcx_uar_t *mlu, uintptr_t off, uint32_t val)
-{
-	/*
-	 * The UAR is always inside the first BAR, which we mapped as
-	 * mlx_regs
-	 */
-	uintptr_t addr = off + (uintptr_t)mlu->mlu_base +
-	    (uintptr_t)mlxp->mlx_regs_base;
-	ddi_put32(mlxp->mlx_regs_handle, (void *)addr, val);
-}
-
-void
-mlxcx_uar_put64(mlxcx_t *mlxp, mlxcx_uar_t *mlu, uintptr_t off, uint64_t val)
-{
-	uintptr_t addr = off + (uintptr_t)mlu->mlu_base +
-	    (uintptr_t)mlxp->mlx_regs_base;
-	ddi_put64(mlxp->mlx_regs_handle, (void *)addr, val);
-}
-
 static void
 mlxcx_fm_fini(mlxcx_t *mlxp)
 {
