@@ -761,6 +761,7 @@ mlxcx_teardown_bufs(mlxcx_t *mlxp)
 	list_destroy(&mlxp->mlx_buf_shards);
 
 	kmem_cache_destroy(mlxp->mlx_bufs_cache);
+	kmem_cache_destroy(mlxp->mlx_mbrm_cache);
 }
 
 static void
@@ -1379,6 +1380,26 @@ mlxcx_bufs_cache_destr(void *arg, void *cookie)
 	list_destroy(&b->mlb_tx_chain);
 }
 
+static int
+mlxcx_mbrm_cache_constr(void *arg, void *cookie, int kmflags)
+{
+	mlxcx_t *mlxp = cookie;
+	mlxcx_buf_return_mblk_t *mbrm = arg;
+	(void)mlxp;
+	bzero(mbrm, sizeof (mlxcx_buf_return_mblk_t));
+	return (0);
+}
+
+static void
+mlxcx_mbrm_cache_destr(void *arg, void *cookie)
+{
+	mlxcx_t *mlxp = cookie;
+	mlxcx_buf_return_mblk_t *mbrm = arg;
+	(void)mlxp;
+	VERIFY3P(mbrm->mbrm_mp, ==, NULL);
+	VERIFY(!list_link_active(&mbrm->mbrm_entry));
+}
+
 mlxcx_buf_shard_t *
 mlxcx_mlbs_create(mlxcx_t *mlxp)
 {
@@ -1411,6 +1432,12 @@ mlxcx_setup_bufs(mlxcx_t *mlxp)
 	mlxp->mlx_bufs_cache = kmem_cache_create(namebuf,
 	    sizeof (mlxcx_buffer_t), sizeof (uint64_t),
 	    mlxcx_bufs_cache_constr, mlxcx_bufs_cache_destr,
+	    NULL, mlxp, NULL, 0);
+	(void) snprintf(namebuf, KSTAT_STRLEN, "mlxcx%d_mbrm_cache",
+	    ddi_get_instance(mlxp->mlx_dip));
+	mlxp->mlx_mbrm_cache = kmem_cache_create(namebuf,
+	    sizeof (mlxcx_buf_return_mblk_t), sizeof (uint64_t),
+	    mlxcx_mbrm_cache_constr, mlxcx_mbrm_cache_destr,
 	    NULL, mlxp, NULL, 0);
 
 	list_create(&mlxp->mlx_buf_shards, sizeof (mlxcx_buf_shard_t),

@@ -1225,6 +1225,7 @@ struct mlxcx {
 	mlxcx_ring_group_t	*mlx_tx_groups;
 
 	kmem_cache_t		*mlx_bufs_cache;
+	kmem_cache_t		*mlx_mbrm_cache;
 	list_t			mlx_buf_shards;
 
 	ddi_periodic_t		mlx_eq_checktimer;
@@ -1237,6 +1238,23 @@ struct mlxcx {
 	uint8_t			mlx_temp_nsensors;
 	mlxcx_temp_sensor_t	*mlx_temp_sensors;
 };
+
+typedef struct mlxcx_buf_return_mblk {
+	list_node_t		mbrm_entry;
+	mblk_t			*mbrm_mp;
+} mlxcx_buf_return_mblk_t;
+
+#define	MLXCX_BUF_RETURN_BATCH_SHARDS	4
+typedef struct mlxcx_buf_return_batch {
+	uint			mbrb_n[MLXCX_BUF_RETURN_BATCH_SHARDS];
+	mlxcx_buf_shard_t	*mbrb_shard[MLXCX_BUF_RETURN_BATCH_SHARDS];
+	list_t			mbrb_list[MLXCX_BUF_RETURN_BATCH_SHARDS];
+	list_t			mbrb_mblks;
+} mlxcx_buf_return_batch_t;
+
+extern void mlxcx_buf_return_batch_init(mlxcx_buf_return_batch_t *);
+extern void mlxcx_buf_return_batch_flush(mlxcx_t *, mlxcx_buf_return_batch_t *);
+
 
 /*
  * Register access.  Use static inlines.
@@ -1410,7 +1428,7 @@ extern void mlxcx_teardown_rx_group(mlxcx_t *, mlxcx_ring_group_t *);
 extern void mlxcx_teardown_tx_group(mlxcx_t *, mlxcx_ring_group_t *);
 
 extern void mlxcx_tx_completion(mlxcx_t *, mlxcx_completion_queue_t *,
-    mlxcx_completionq_ent_t *, mlxcx_buffer_t *);
+    mlxcx_completionq_ent_t *, mlxcx_buffer_t *, mlxcx_buf_return_batch_t *);
 extern mblk_t *mlxcx_rx_completion(mlxcx_t *, mlxcx_completion_queue_t *,
     mlxcx_completionq_ent_t *, mlxcx_buffer_t *);
 

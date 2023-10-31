@@ -1997,16 +1997,22 @@ mlxcx_fm_cqe_ereport(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq,
 	ddi_fm_service_impact(mlxp->mlx_dip, DDI_SERVICE_DEGRADED);
 }
 
+static void	mlxcx_buf_return_batch_push(mlxcx_t *mlxp,
+    mlxcx_buf_return_batch_t *mbrb, mlxcx_buffer_t *b);
+static void	mlxcx_buf_return_batch_push_chain(mlxcx_t *mlxp,
+    mlxcx_buf_return_batch_t *mbrb, mlxcx_buffer_t *b0, boolean_t keepmp);
+
 void
 mlxcx_tx_completion(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq,
-    mlxcx_completionq_ent_t *ent, mlxcx_buffer_t *buf)
+    mlxcx_completionq_ent_t *ent, mlxcx_buffer_t *buf,
+    mlxcx_buf_return_batch_t *mbrb)
 {
 	ASSERT(mutex_owned(&mlcq->mlcq_mtx));
 	if (ent->mlcqe_opcode == MLXCX_CQE_OP_REQ_ERR) {
 		mlxcx_completionq_error_ent_t *eent =
 		    (mlxcx_completionq_error_ent_t *)ent;
 		mlxcx_fm_cqe_ereport(mlxp, mlcq, eent);
-		mlxcx_buf_return_chain(mlxp, buf, B_FALSE);
+		mlxcx_buf_return_batch_push_chain(mlxp, mbrb, buf, B_FALSE);
 		mutex_enter(&mlcq->mlcq_wq->mlwq_mtx);
 		mlxcx_check_sq(mlxp, mlcq->mlcq_wq);
 		mutex_exit(&mlcq->mlcq_wq->mlwq_mtx);
@@ -2015,24 +2021,24 @@ mlxcx_tx_completion(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq,
 
 	if (ent->mlcqe_opcode != MLXCX_CQE_OP_REQ) {
 		mlxcx_warn(mlxp, "!got weird cq opcode: %x", ent->mlcqe_opcode);
-		mlxcx_buf_return_chain(mlxp, buf, B_FALSE);
+		mlxcx_buf_return_batch_push_chain(mlxp, mbrb, buf, B_FALSE);
 		return;
 	}
 
 	if (ent->mlcqe_send_wqe_opcode != MLXCX_WQE_OP_SEND) {
 		mlxcx_warn(mlxp, "!got weird cq wqe opcode: %x",
 		    ent->mlcqe_send_wqe_opcode);
-		mlxcx_buf_return_chain(mlxp, buf, B_FALSE);
+		mlxcx_buf_return_batch_push_chain(mlxp, mbrb, buf, B_FALSE);
 		return;
 	}
 
 	if (ent->mlcqe_format != MLXCX_CQE_FORMAT_BASIC) {
 		mlxcx_warn(mlxp, "!got weird cq format: %x", ent->mlcqe_format);
-		mlxcx_buf_return_chain(mlxp, buf, B_FALSE);
+		mlxcx_buf_return_batch_push_chain(mlxp, mbrb, buf, B_FALSE);
 		return;
 	}
 
-	mlxcx_buf_return_chain(mlxp, buf, B_FALSE);
+	mlxcx_buf_return_batch_push_chain(mlxp, mbrb, buf, B_FALSE);
 }
 
 mblk_t *
@@ -2496,12 +2502,223 @@ mlxcx_buf_return_chain(mlxcx_t *mlxp, mlxcx_buffer_t *b0, boolean_t keepmp)
 	mlxcx_buf_return(mlxp, b0);
 }
 
+static void
+mlxcx_buf_return_batch_push_chain(mlxcx_t *mlxp, mlxcx_buf_return_batch_t *mbrb,
+    mlxcx_buffer_t *b0, boolean_t keepmp)
+{
+	mlxcx_buffer_t *b;
+
+	if (b0->mlb_tx_head != b0) {
+		mlxcx_buf_return_batch_push(mlxp, mbrb, b0);
+		return;
+	}
+
+	b = list_head(&b0->mlb_tx_chain);
+	while (b != NULL) {
+		mlxcx_buf_return_batch_push(mlxp, mbrb, b);
+		b = list_next(&b0->mlb_tx_chain, b);
+	}
+	if (keepmp) {
+		b0->mlb_tx_mp = NULL;
+		b0->mlb_tx_head = NULL;
+	}
+	mlxcx_buf_return_batch_push(mlxp, mbrb, b0);
+}
+
 inline void
 mlxcx_bufshard_adjust_total(mlxcx_buf_shard_t *s, int64_t incr)
 {
 	s->mlbs_ntotal += incr;
 	s->mlbs_hiwat1 = s->mlbs_ntotal / 2;
 	s->mlbs_hiwat2 = 3 * (s->mlbs_ntotal / 4);
+}
+
+static void mlxcx_buf_return_batch_flush_shard(mlxcx_t *,
+    mlxcx_buf_return_batch_t *, uint);
+
+static void
+mlxcx_buf_return_batch_push(mlxcx_t *mlxp, mlxcx_buf_return_batch_t *mbrb,
+    mlxcx_buffer_t *b)
+{
+	uint i, found = 0;
+	uint min_n, min_n_i;
+	mlxcx_buf_shard_t *s = b->mlb_shard;
+
+	VERIFY(!list_link_active(&b->mlb_cq_entry));
+
+	/*
+	 * Are we already spooling up buffers for this shard? If so, add it
+	 * to that existing list
+	 */
+	for (i = 0; i < MLXCX_BUF_RETURN_BATCH_SHARDS; ++i) {
+		if (mbrb->mbrb_shard[i] == s) {
+			found = 1;
+			break;
+		}
+	}
+	if (!found) {
+		/* Do we have any unused shard slots? If so, use that. */
+		for (i = 0; i < MLXCX_BUF_RETURN_BATCH_SHARDS; ++i) {
+			if (mbrb->mbrb_shard[i] == NULL) {
+				mbrb->mbrb_shard[i] = s;
+				found = 1;
+				break;
+			}
+		}
+	}
+	if (!found) {
+		/* Otherwise evict the least popular shard. */
+		min_n = mbrb->mbrb_n[0];
+		min_n_i = 0;
+		for (i = 0; i < MLXCX_BUF_RETURN_BATCH_SHARDS; ++i) {
+			if (mbrb->mbrb_n[i] < min_n) {
+				min_n = mbrb->mbrb_n[i];
+				min_n_i = i;
+			}
+		}
+		mlxcx_buf_return_batch_flush_shard(mlxp, mbrb, min_n_i);
+		i = min_n_i;
+		found = 1;
+	}
+	ASSERT(found);
+
+	++mbrb->mbrb_n[i];
+	list_insert_tail(&mbrb->mbrb_list[i], b);
+}
+
+void
+mlxcx_buf_return_batch_init(mlxcx_buf_return_batch_t *mbrb)
+{
+	uint i;
+	list_create(&mbrb->mbrb_mblks, sizeof (mlxcx_buf_return_mblk_t),
+	    offsetof(mlxcx_buf_return_mblk_t, mbrm_entry));
+	for (i = 0; i < MLXCX_BUF_RETURN_BATCH_SHARDS; ++i) {
+		mbrb->mbrb_shard[i] = NULL;
+		list_create(&mbrb->mbrb_list[i], sizeof (mlxcx_buffer_t),
+		    offsetof(mlxcx_buffer_t, mlb_cq_entry));
+	}
+}
+
+static void
+mlxcx_buf_return_step1(mlxcx_t *mlxp, mlxcx_buf_return_batch_t *mbrb,
+    mlxcx_buffer_t *b)
+{
+	mlxcx_buffer_t *txhead = b->mlb_tx_head;
+	mlxcx_buf_shard_t *s = b->mlb_shard;
+	mlxcx_buf_return_mblk_t *mbrm;
+	mblk_t *mp = b->mlb_tx_mp;
+
+	VERIFY3U(b->mlb_state, !=, MLXCX_BUFFER_FREE);
+	ASSERT3P(b->mlb_mlx, ==, mlxp);
+
+	b->mlb_wqe_index = 0;
+	b->mlb_tx_mp = NULL;
+	b->mlb_used = 0;
+	b->mlb_wqebbs = 0;
+	if (txhead == b) {
+		mbrm = kmem_cache_alloc(mlxp->mlx_mbrm_cache, KM_SLEEP);
+		mbrm->mbrm_mp = mp;
+		list_insert_tail(&mbrb->mbrb_mblks, mbrm);
+	}
+	ASSERT(list_is_empty(&b->mlb_tx_chain));
+
+	if (b->mlb_foreign) {
+		if (b->mlb_dma.mxdb_flags & MLXCX_DMABUF_BOUND) {
+			mlxcx_dma_unbind(mlxp, &b->mlb_dma);
+		}
+	}
+}
+
+static void
+mlxcx_buf_return_step2(mlxcx_t *mlxp, mlxcx_buffer_t *b)
+{
+	mlxcx_buffer_state_t oldstate = b->mlb_state;
+	mlxcx_buffer_t *txhead = b->mlb_tx_head;
+	mlxcx_buf_shard_t *s = b->mlb_shard;
+	mblk_t *mp = b->mlb_tx_mp;
+
+	ASSERT(mutex_owned(&s->mlbs_mtx));
+
+	b->mlb_state = MLXCX_BUFFER_FREE;
+	b->mlb_tx_head = NULL;
+
+	switch (oldstate) {
+	case MLXCX_BUFFER_INIT:
+		mlxcx_bufshard_adjust_total(s, 1);
+		break;
+	case MLXCX_BUFFER_ON_WQ:
+		list_remove(&s->mlbs_busy, b);
+		break;
+	case MLXCX_BUFFER_ON_LOAN:
+		ASSERT(!b->mlb_foreign);
+		--s->mlbs_nloaned;
+		list_remove(&s->mlbs_loaned, b);
+		if (s->mlbs_state == MLXCX_SHARD_DRAINING) {
+			/*
+			 * When we're draining, Eg during mac_stop(),
+			 * we destroy the buffer immediately rather than
+			 * recycling it. Otherwise we risk leaving it
+			 * on the free list and leaking it.
+			 */
+			list_insert_tail(&s->mlbs_free, b);
+			mlxcx_buf_destroy(mlxp, b);
+			/*
+			 * Teardown might be waiting for loaned list to empty.
+			 */
+			cv_broadcast(&s->mlbs_free_nonempty);
+			return;
+		}
+		break;
+	case MLXCX_BUFFER_FREE:
+		VERIFY(0);
+		break;
+	case MLXCX_BUFFER_ON_CHAIN:
+		ASSERT(txhead != NULL);
+		list_remove(&txhead->mlb_tx_chain, b);
+		list_remove(&s->mlbs_busy, b);
+		break;
+	}
+
+	list_insert_tail(&s->mlbs_free, b);
+	cv_broadcast(&s->mlbs_free_nonempty);
+}
+
+static void
+mlxcx_buf_return_batch_flush_shard(mlxcx_t *mlxp,
+    mlxcx_buf_return_batch_t *mbrb, uint i)
+{
+	mlxcx_buffer_t *b;
+	mlxcx_buf_return_mblk_t *mbrm;
+
+	b = list_head(&mbrb->mbrb_list[i]);
+	while (b != NULL) {
+		mlxcx_buf_return_step1(mlxp, mbrb, b);
+		b = list_next(&mbrb->mbrb_list[i], b);
+	}
+	mutex_enter(&mbrb->mbrb_shard[i]->mlbs_mtx);
+	while ((b = list_remove_head(&mbrb->mbrb_list[i]))) {
+		mlxcx_buf_return_step2(mlxp, b);
+	}
+	mutex_exit(&mbrb->mbrb_shard[i]->mlbs_mtx);
+	while ((mbrm = list_remove_head(&mbrb->mbrb_mblks))) {
+		freemsg(mbrm->mbrm_mp);
+		mbrm->mbrm_mp = NULL;
+		kmem_cache_free(mlxp->mlx_mbrm_cache, mbrm);
+	}
+
+	mbrb->mbrb_shard[i] = NULL;
+	mbrb->mbrb_n[i] = 0;
+}
+
+void
+mlxcx_buf_return_batch_flush(mlxcx_t *mlxp, mlxcx_buf_return_batch_t *mbrb)
+{
+	uint i;
+	for (i = 0; i < MLXCX_BUF_RETURN_BATCH_SHARDS; ++i) {
+		if (mbrb->mbrb_shard[i] == NULL)
+			continue;
+		mlxcx_buf_return_batch_flush_shard(mlxp, mbrb, i);
+	}
 }
 
 void
