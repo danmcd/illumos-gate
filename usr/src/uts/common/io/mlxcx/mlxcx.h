@@ -624,6 +624,7 @@ typedef struct mlxcx_completion_queue {
 	list_t				mlcq_buffers;
 	kmutex_t			mlcq_bufbmtx;
 	list_t				mlcq_buffers_b;
+	uint64_t			mlcq_bufbgen;
 
 	uint_t				mlcq_check_disarm_cnt;
 	uint64_t			mlcq_check_disarm_cc;

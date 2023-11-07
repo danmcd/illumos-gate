@@ -942,6 +942,7 @@ lookagain:
 				list_move_tail(&mlcq->mlcq_buffers,
 				    &mlcq->mlcq_buffers_b);
 				added = B_TRUE;
+				++mlcq->mlcq_bufbgen;
 			}
 			mutex_exit(&mlcq->mlcq_bufbmtx);
 			if (added)

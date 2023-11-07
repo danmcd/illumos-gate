@@ -1559,6 +1559,7 @@ mlxcx_sq_add_buffer(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 	mlxcx_buffer_t *b;
 	ddi_fm_error_t err;
 	boolean_t rv;
+	uint64_t bufbgen;
 
 	ASSERT(mutex_owned(&mlwq->mlwq_mtx));
 	ASSERT3P(b0->mlb_tx_head, ==, b0);
@@ -1700,20 +1701,31 @@ mlxcx_sq_add_buffer(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 	}
 
 	/*
-	 * Hold the bufmtx whilst ringing the doorbell, to prevent
-	 * the buffer from being moved to another list, so we can
-	 * safely remove it should the ring fail.
+	 * Stash the bufbgen counter, which is incremented every time
+	 * buffers_b is merged into buffers. This lets us easily tell which
+	 * list we need to take the buffer back from if we fail in
+	 * sq_ring_dbell (which will only happen if everything is going pretty
+	 * badly).
 	 */
 	mutex_enter(&cq->mlcq_bufbmtx);
-
+	bufbgen = cq->mlcq_bufbgen;
 	list_insert_tail(&cq->mlcq_buffers_b, b0);
+	mutex_exit(&cq->mlcq_bufbmtx);
+
 	if ((rv = mlxcx_sq_ring_dbell(mlxp, mlwq, first))) {
 		atomic_inc_64(&cq->mlcq_bufcnt);
 	} else {
-		list_remove(&cq->mlcq_buffers_b, b0);
+		mutex_enter(&cq->mlcq_bufbmtx);
+		if (bufbgen == cq->mlcq_bufbgen) {
+			list_remove(&cq->mlcq_buffers_b, b0);
+			mutex_exit(&cq->mlcq_bufbmtx);
+		} else {
+			mutex_exit(&cq->mlcq_bufbmtx);
+			mutex_enter(&cq->mlcq_mtx);
+			list_remove(&cq->mlcq_buffers, b0);
+			mutex_exit(&cq->mlcq_mtx);
+		}
 	}
-
-	mutex_exit(&cq->mlcq_bufbmtx);
 
 	return (rv);
 }
