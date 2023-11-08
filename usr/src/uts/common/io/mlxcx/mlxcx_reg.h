@@ -71,8 +71,8 @@
 #define	MLXCX_UAR_EQ_NOARM	0x0048
 
 /* Number of blue flame reg pairs per UAR */
-#define	MLXCX_BF_PER_UAR	2
-#define	MLXCX_BF_PER_UAR_MASK	0x1
+#define	MLXCX_BF_PER_UAR	4
+#define	MLXCX_BF_PER_UAR_MASK	(MLXCX_BF_PER_UAR - 1)
 #define	MLXCX_BF_SIZE		0x100
 #define	MLXCX_BF_BASE		0x0800
 

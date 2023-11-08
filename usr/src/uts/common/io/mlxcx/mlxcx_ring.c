@@ -685,12 +685,16 @@ mlxcx_teardown_tx_group(mlxcx_t *mlxp, mlxcx_ring_group_t *g)
 		g->mlg_state &= ~MLXCX_GROUP_WQS;
 	}
 
-	if ((g->mlg_state & MLXCX_GROUP_TIRTIS) &&
-	    g->mlg_tis.mltis_state & MLXCX_TIS_CREATED &&
-	    !(g->mlg_tis.mltis_state & MLXCX_TIS_DESTROYED)) {
-		if (!mlxcx_cmd_destroy_tis(mlxp, &g->mlg_tis)) {
-			mlxcx_warn(mlxp, "failed to destroy tis %u for tx ring",
-			    g->mlg_tis.mltis_num);
+	if ((g->mlg_state & MLXCX_GROUP_TIRTIS)) {
+		for (i = 0; i < MLXCX_TIS_PER_GROUP; ++i) {
+			if (!(g->mlg_tis[i].mltis_state & MLXCX_TIS_CREATED))
+				continue;
+			if (g->mlg_tis[i].mltis_state & MLXCX_TIS_DESTROYED)
+				continue;
+			if (!mlxcx_cmd_destroy_tis(mlxp, &g->mlg_tis[i])) {
+				mlxcx_warn(mlxp, "failed to destroy tis %u for "
+				    "tx ring", g->mlg_tis[i].mltis_num);
+			}
 		}
 	}
 	g->mlg_state &= ~MLXCX_GROUP_TIRTIS;
@@ -1324,6 +1328,7 @@ mlxcx_tx_group_setup(mlxcx_t *mlxp, mlxcx_ring_group_t *g)
 	mlxcx_completion_queue_t *cq;
 	mlxcx_work_queue_t *sq;
 	uint_t i;
+	mlxcx_tis_t *tis;
 
 	ASSERT3S(g->mlg_state, ==, 0);
 
@@ -1341,11 +1346,13 @@ mlxcx_tx_group_setup(mlxcx_t *mlxp, mlxcx_ring_group_t *g)
 	g->mlg_wqs = kmem_zalloc(g->mlg_wqs_size, KM_SLEEP);
 	g->mlg_state |= MLXCX_GROUP_WQS;
 
-	g->mlg_tis.mltis_tdom = &mlxp->mlx_tdom;
+	for (i = 0; i < MLXCX_TIS_PER_GROUP; ++i) {
+		g->mlg_tis[i].mltis_tdom = &mlxp->mlx_tdom;
 
-	if (!mlxcx_cmd_create_tis(mlxp, &g->mlg_tis)) {
-		mutex_exit(&g->mlg_mtx);
-		return (B_FALSE);
+		if (!mlxcx_cmd_create_tis(mlxp, &g->mlg_tis[i])) {
+			mutex_exit(&g->mlg_mtx);
+			return (B_FALSE);
+		}
 	}
 
 	g->mlg_state |= MLXCX_GROUP_TIRTIS;
@@ -1370,7 +1377,8 @@ mlxcx_tx_group_setup(mlxcx_t *mlxp, mlxcx_ring_group_t *g)
 		cq->mlcq_stats = &g->mlg_port->mlp_stats;
 
 		sq = &g->mlg_wqs[i];
-		if (!mlxcx_sq_setup(mlxp, g->mlg_port, cq, &g->mlg_tis, sq)) {
+		tis = &g->mlg_tis[i % MLXCX_TIS_PER_GROUP];
+		if (!mlxcx_sq_setup(mlxp, g->mlg_port, cq, tis, sq)) {
 			mutex_exit(&g->mlg_mtx);
 			return (B_FALSE);
 		}

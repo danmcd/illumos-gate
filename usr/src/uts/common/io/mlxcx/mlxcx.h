@@ -887,6 +887,8 @@ typedef enum {
 	MLXCX_TIRS_PER_GROUP
 } mlxcx_tir_role_t;
 
+#define	MLXCX_TIS_PER_GROUP	8
+
 typedef struct {
 	avl_node_t		mlgm_group_entry;
 	list_node_t		mlgm_fe_entry;
@@ -911,7 +913,7 @@ struct mlxcx_ring_group {
 	mac_group_handle_t		mlg_mac_hdl;
 
 	union {
-		mlxcx_tis_t		mlg_tis;
+		mlxcx_tis_t		mlg_tis[MLXCX_TIS_PER_GROUP];
 		mlxcx_tir_t		mlg_tir[MLXCX_TIRS_PER_GROUP];
 	};
 	mlxcx_port_t			*mlg_port;
