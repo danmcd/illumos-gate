@@ -571,6 +571,14 @@ typedef struct mlxcx_buffer {
 	mlxcx_dma_buffer_t	mlb_dma;
 	mblk_t			*mlb_mp;
 	frtn_t			mlb_frtn;
+
+	/* spooled up sendq entries ready to push into the ring */
+	union {
+		mlxcx_sendq_ent_t	*mlb_sqe;
+		mlxcx_sendq_extra_ent_t	*mlb_esqe;
+	};
+	size_t			mlb_sqe_size;
+	uint_t			mlb_sqe_count;
 } mlxcx_buffer_t;
 
 typedef enum {
@@ -1423,6 +1431,8 @@ extern boolean_t mlxcx_sq_add_buffer(mlxcx_t *, mlxcx_work_queue_t *,
     uint8_t *, size_t, uint32_t, mlxcx_buffer_t *);
 extern boolean_t mlxcx_sq_add_nop(mlxcx_t *, mlxcx_work_queue_t *);
 extern void mlxcx_rq_refill(mlxcx_t *, mlxcx_work_queue_t *);
+extern void mlxcx_buf_prepare_sqe(mlxcx_t *, mlxcx_work_queue_t *,
+    mlxcx_buffer_t *, uint8_t *, size_t, uint32_t);
 
 extern void mlxcx_teardown_groups(mlxcx_t *);
 extern void mlxcx_wq_teardown(mlxcx_t *, mlxcx_work_queue_t *);

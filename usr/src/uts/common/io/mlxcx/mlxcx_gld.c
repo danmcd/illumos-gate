@@ -676,6 +676,9 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		return (mp);
 	}
 
+	(void) mlxcx_buf_prepare_sqe(mlxp, sq, b, inline_hdrs, inline_hdrlen,
+	    chkflags);
+
 	mutex_enter(&sq->mlwq_mtx);
 	VERIFY3U(sq->mlwq_inline_mode, <=, MLXCX_ETH_INLINE_L2);
 	cq = sq->mlwq_cq;
@@ -721,6 +724,8 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		goto blocked;
 	}
 
+	mutex_exit(&sq->mlwq_mtx);
+
 	/*
 	 * Now that we've successfully enqueued the rest of the packet,
 	 * free any mblks that we cut off while inlining headers.
@@ -729,8 +734,6 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		nmp = mp->b_cont;
 		freeb(mp);
 	}
-
-	mutex_exit(&sq->mlwq_mtx);
 
 	return (NULL);
 

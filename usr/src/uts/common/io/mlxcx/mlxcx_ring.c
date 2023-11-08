@@ -1555,16 +1555,11 @@ mlxcx_sq_add_buffer(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
     uint8_t *inlinehdrs, size_t inlinelen, uint32_t chkflags,
     mlxcx_buffer_t *b0)
 {
-	uint_t index, first, ents;
+	uint_t index, first, ents, j;
 	mlxcx_completion_queue_t *cq;
 	mlxcx_sendq_ent_t *ent0;
 	mlxcx_sendq_extra_ent_t *ent;
-	mlxcx_wqe_data_seg_t *seg;
-	uint_t ptri, nptr;
-	const ddi_dma_cookie_t *c;
-	size_t rem;
 	uint64_t wqebb_used;
-	mlxcx_buffer_t *b;
 	ddi_fm_error_t err;
 	boolean_t rv;
 	uint64_t bufbgen;
@@ -1573,45 +1568,6 @@ mlxcx_sq_add_buffer(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 	ASSERT3P(b0->mlb_tx_head, ==, b0);
 	ASSERT3U(b0->mlb_state, ==, MLXCX_BUFFER_ON_WQ);
 	cq = mlwq->mlwq_cq;
-
-	index = mlwq->mlwq_pc & (mlwq->mlwq_nents - 1);
-	ent0 = &mlwq->mlwq_send_ent[index];
-	b0->mlb_wqe_index = mlwq->mlwq_pc;
-	ents = 1;
-
-	first = index;
-
-	bzero(ent0, sizeof (mlxcx_sendq_ent_t));
-	ent0->mlsqe_control.mlcs_opcode = MLXCX_WQE_OP_SEND;
-	ent0->mlsqe_control.mlcs_qp_or_sq = to_be24(mlwq->mlwq_num);
-	ent0->mlsqe_control.mlcs_wqe_index = to_be16(b0->mlb_wqe_index);
-
-	set_bits8(&ent0->mlsqe_control.mlcs_flags,
-	    MLXCX_SQE_FENCE_MODE, MLXCX_SQE_FENCE_WAIT_OTHERS);
-	set_bits8(&ent0->mlsqe_control.mlcs_flags,
-	    MLXCX_SQE_COMPLETION_MODE, MLXCX_SQE_CQE_ALWAYS);
-
-	VERIFY3U(inlinelen, <=, sizeof (ent0->mlsqe_eth.mles_inline_headers));
-	set_bits16(&ent0->mlsqe_eth.mles_szflags,
-	    MLXCX_SQE_ETH_INLINE_HDR_SZ, inlinelen);
-	if (inlinelen > 0) {
-		bcopy(inlinehdrs, ent0->mlsqe_eth.mles_inline_headers,
-		    inlinelen);
-	}
-
-	ent0->mlsqe_control.mlcs_ds = offsetof(mlxcx_sendq_ent_t, mlsqe_data) /
-	    MLXCX_WQE_OCTOWORD;
-
-	if (chkflags & HCK_IPV4_HDRCKSUM) {
-		ASSERT(mlxp->mlx_caps->mlc_checksum);
-		set_bit8(&ent0->mlsqe_eth.mles_csflags,
-		    MLXCX_SQE_ETH_CSFLAG_L3_CHECKSUM);
-	}
-	if (chkflags & HCK_FULLCKSUM) {
-		ASSERT(mlxp->mlx_caps->mlc_checksum);
-		set_bit8(&ent0->mlsqe_eth.mles_csflags,
-		    MLXCX_SQE_ETH_CSFLAG_L4_CHECKSUM);
-	}
 
 	/*
 	 * mlwq_wqebb_used is only incremented whilst holding
@@ -1623,64 +1579,65 @@ mlxcx_sq_add_buffer(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 	 */
 	wqebb_used = mlwq->mlwq_wqebb_used;
 
-	b = b0;
-	ptri = 0;
-	nptr = sizeof (ent0->mlsqe_data) / sizeof (mlxcx_wqe_data_seg_t);
-	seg = ent0->mlsqe_data;
-	while (b != NULL) {
-		rem = b->mlb_used;
+	if ((b0->mlb_wqebbs + wqebb_used) >= mlwq->mlwq_nents)
+		return (B_FALSE);
 
-		c = NULL;
-		while (rem > 0 &&
-		    (c = mlxcx_dma_cookie_iter(&b->mlb_dma, c)) != NULL) {
-			if (ptri >= nptr) {
-				if ((ents + wqebb_used) >= mlwq->mlwq_nents)
-					return (B_FALSE);
+	index = mlwq->mlwq_pc & (mlwq->mlwq_nents - 1);
+	first = index;
+	ents = 0;
 
-				index = (mlwq->mlwq_pc + ents) &
-				    (mlwq->mlwq_nents - 1);
-				ent = &mlwq->mlwq_send_extra_ent[index];
-				++ents;
+	if (b0->mlb_sqe == NULL || b0->mlb_wqebbs == 0)
+		return (B_FALSE);
 
-				seg = ent->mlsqe_data;
-				ptri = 0;
-				nptr = sizeof (ent->mlsqe_data) /
-				    sizeof (mlxcx_wqe_data_seg_t);
-			}
+	/*
+	 * Don't let a multi-WQEBB send request wrap around the ring -- if
+	 * it looks like we need to do that, pad with NOPs to the end.
+	 */
+	if (index + b0->mlb_wqebbs > mlwq->mlwq_nents) {
+		while (index != 0) {
+			if ((ents + wqebb_used) >= mlwq->mlwq_nents)
+				return (B_FALSE);
 
-			seg->mlds_lkey = to_be32(mlxp->mlx_rsvd_lkey);
-			if (c->dmac_size > rem) {
-				seg->mlds_byte_count = to_be32(rem);
-				rem = 0;
-			} else {
-				seg->mlds_byte_count = to_be32(c->dmac_size);
-				rem -= c->dmac_size;
-			}
-			seg->mlds_address = to_be64(c->dmac_laddress);
-			++seg;
-			++ptri;
-			++ent0->mlsqe_control.mlcs_ds;
+			ent0 = &mlwq->mlwq_send_ent[index];
 
-			ASSERT3U(ent0->mlsqe_control.mlcs_ds, <=,
-			    MLXCX_SQE_MAX_DS);
-		}
+			bzero(ent0, sizeof (mlxcx_sendq_ent_t));
+			ent0->mlsqe_control.mlcs_opcode = MLXCX_WQE_OP_NOP;
+			ent0->mlsqe_control.mlcs_qp_or_sq =
+			    to_be24(mlwq->mlwq_num);
+			ent0->mlsqe_control.mlcs_wqe_index =
+			    to_be16(mlwq->mlwq_pc + ents);
 
-		if (b == b0) {
-			b = list_head(&b0->mlb_tx_chain);
-		} else {
-			b = list_next(&b0->mlb_tx_chain, b);
+			set_bits8(&ent0->mlsqe_control.mlcs_flags,
+			    MLXCX_SQE_FENCE_MODE, MLXCX_SQE_FENCE_NONE);
+			set_bits8(&ent0->mlsqe_control.mlcs_flags,
+			    MLXCX_SQE_COMPLETION_MODE, MLXCX_SQE_CQE_ALWAYS);
+
+			ent0->mlsqe_control.mlcs_ds = 1;
+
+			++ents;
+			index = (mlwq->mlwq_pc + ents) & (mlwq->mlwq_nents - 1);
 		}
 	}
 
-	b0->mlb_wqebbs = ents;
+	ent0 = &mlwq->mlwq_send_ent[index];
+	b0->mlb_wqe_index = mlwq->mlwq_pc + ents;
+	++ents;
+
+	bcopy(&b0->mlb_sqe[0], ent0, sizeof (*ent0));
+	ent0->mlsqe_control.mlcs_wqe_index = to_be16(b0->mlb_wqe_index);
+
+	for (j = 1; j < b0->mlb_wqebbs; ++j) {
+		if ((ents + wqebb_used) >= mlwq->mlwq_nents)
+			return (B_FALSE);
+		index = (mlwq->mlwq_pc + ents) &
+		    (mlwq->mlwq_nents - 1);
+		++ents;
+		ent = &mlwq->mlwq_send_extra_ent[index];
+		bcopy(&b0->mlb_esqe[j], ent, sizeof (*ent));
+	}
+
 	mlwq->mlwq_pc += ents;
 	atomic_add_64(&mlwq->mlwq_wqebb_used, ents);
-
-	for (; ptri < nptr; ++ptri, ++seg) {
-		seg->mlds_lkey = to_be32(MLXCX_NULL_LKEY);
-		seg->mlds_byte_count = to_be32(0);
-		seg->mlds_address = to_be64(0);
-	}
 
 	/*
 	 * Make sure the workqueue entry is flushed out before updating
@@ -2281,7 +2238,8 @@ copyb:
 	ASSERT3U(b->mlb_dma.mxdb_len, >=, sz);
 	bcopy(rptr, b->mlb_dma.mxdb_va, sz);
 
-	MLXCX_DMA_SYNC(b->mlb_dma, DDI_DMA_SYNC_FORDEV);
+	(void)ddi_dma_sync(b->mlb_dma.mxdb_dma_handle, 0, sz,
+	    DDI_DMA_SYNC_FORDEV);
 
 	ddi_fm_dma_err_get(b->mlb_dma.mxdb_dma_handle, &err,
 	    DDI_FME_VERSION);
@@ -2337,6 +2295,120 @@ mlxcx_bind_or_copy_mblk(mlxcx_t *mlxp, mlxcx_work_queue_t *wq,
 	}
 
 	return (b);
+}
+
+void
+mlxcx_buf_prepare_sqe(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
+    mlxcx_buffer_t *b0, uint8_t *inlinehdrs, size_t inlinelen,
+    uint32_t chkflags)
+{
+	mlxcx_sendq_ent_t *ent0;
+	mlxcx_sendq_extra_ent_t *ent;
+	mlxcx_wqe_data_seg_t *seg;
+	uint_t ents, ptri, nptr;
+	const ddi_dma_cookie_t *c;
+	size_t rem;
+	mlxcx_buffer_t *b;
+
+	ASSERT3P(b0->mlb_tx_head, ==, b0);
+	ASSERT3U(b0->mlb_state, ==, MLXCX_BUFFER_ON_WQ);
+
+	if (b0->mlb_sqe == NULL) {
+		b0->mlb_sqe_count = MLXCX_SQE_BUF;
+		b0->mlb_sqe_size = b0->mlb_sqe_count *
+		    sizeof (mlxcx_sendq_ent_t);
+		b0->mlb_sqe = kmem_zalloc(b0->mlb_sqe_size, KM_SLEEP);
+	}
+
+	ents = 1;
+	ent0 = &b0->mlb_sqe[0];
+
+	bzero(ent0, sizeof (mlxcx_sendq_ent_t));
+	ent0->mlsqe_control.mlcs_opcode = MLXCX_WQE_OP_SEND;
+	ent0->mlsqe_control.mlcs_qp_or_sq = to_be24(mlwq->mlwq_num);
+	/* mlcs_wqe_index set by mlxcx_sq_add_buffer */
+
+	set_bits8(&ent0->mlsqe_control.mlcs_flags,
+	    MLXCX_SQE_FENCE_MODE, MLXCX_SQE_FENCE_NONE);
+	set_bits8(&ent0->mlsqe_control.mlcs_flags,
+	    MLXCX_SQE_COMPLETION_MODE, MLXCX_SQE_CQE_ALWAYS);
+
+	VERIFY3U(inlinelen, <=, sizeof (ent0->mlsqe_eth.mles_inline_headers));
+	set_bits16(&ent0->mlsqe_eth.mles_szflags,
+	    MLXCX_SQE_ETH_INLINE_HDR_SZ, inlinelen);
+	if (inlinelen > 0) {
+		bcopy(inlinehdrs, ent0->mlsqe_eth.mles_inline_headers,
+		    inlinelen);
+	}
+
+	ent0->mlsqe_control.mlcs_ds = offsetof(mlxcx_sendq_ent_t, mlsqe_data) /
+	    MLXCX_WQE_OCTOWORD;
+
+	if (chkflags & HCK_IPV4_HDRCKSUM) {
+		ASSERT(mlxp->mlx_caps->mlc_checksum);
+		set_bit8(&ent0->mlsqe_eth.mles_csflags,
+		    MLXCX_SQE_ETH_CSFLAG_L3_CHECKSUM);
+	}
+	if (chkflags & HCK_FULLCKSUM) {
+		ASSERT(mlxp->mlx_caps->mlc_checksum);
+		set_bit8(&ent0->mlsqe_eth.mles_csflags,
+		    MLXCX_SQE_ETH_CSFLAG_L4_CHECKSUM);
+	}
+
+	b = b0;
+	ptri = 0;
+	nptr = sizeof (ent0->mlsqe_data) / sizeof (mlxcx_wqe_data_seg_t);
+	seg = ent0->mlsqe_data;
+	while (b != NULL) {
+		rem = b->mlb_used;
+
+		c = NULL;
+		while (rem > 0 &&
+		    (c = mlxcx_dma_cookie_iter(&b->mlb_dma, c)) != NULL) {
+			if (ptri >= nptr) {
+				if (ents > b0->mlb_sqe_count)
+					return;
+
+				ent = &b0->mlb_esqe[ents];
+				++ents;
+
+				seg = ent->mlsqe_data;
+				ptri = 0;
+				nptr = sizeof (ent->mlsqe_data) /
+				    sizeof (mlxcx_wqe_data_seg_t);
+			}
+
+			seg->mlds_lkey = to_be32(mlxp->mlx_rsvd_lkey);
+			if (c->dmac_size > rem) {
+				seg->mlds_byte_count = to_be32(rem);
+				rem = 0;
+			} else {
+				seg->mlds_byte_count = to_be32(c->dmac_size);
+				rem -= c->dmac_size;
+			}
+			seg->mlds_address = to_be64(c->dmac_laddress);
+			++seg;
+			++ptri;
+			++ent0->mlsqe_control.mlcs_ds;
+
+			ASSERT3U(ent0->mlsqe_control.mlcs_ds, <=,
+			    MLXCX_SQE_MAX_DS);
+		}
+
+		if (b == b0) {
+			b = list_head(&b0->mlb_tx_chain);
+		} else {
+			b = list_next(&b0->mlb_tx_chain, b);
+		}
+	}
+
+	b0->mlb_wqebbs = ents;
+
+	for (; ptri < nptr; ++ptri, ++seg) {
+		seg->mlds_lkey = to_be32(MLXCX_NULL_LKEY);
+		seg->mlds_byte_count = to_be32(0);
+		seg->mlds_address = to_be64(0);
+	}
 }
 
 uint_t
@@ -2624,7 +2696,6 @@ mlxcx_buf_return_step1(mlxcx_t *mlxp, mlxcx_buf_return_batch_t *mbrb,
     mlxcx_buffer_t *b)
 {
 	mlxcx_buffer_t *txhead = b->mlb_tx_head;
-	mlxcx_buf_shard_t *s = b->mlb_shard;
 	mlxcx_buf_return_mblk_t *mbrm;
 	mblk_t *mp = b->mlb_tx_mp;
 
@@ -2655,7 +2726,6 @@ mlxcx_buf_return_step2(mlxcx_t *mlxp, mlxcx_buffer_t *b)
 	mlxcx_buffer_state_t oldstate = b->mlb_state;
 	mlxcx_buffer_t *txhead = b->mlb_tx_head;
 	mlxcx_buf_shard_t *s = b->mlb_shard;
-	mblk_t *mp = b->mlb_tx_mp;
 
 	ASSERT(mutex_owned(&s->mlbs_mtx));
 
@@ -2837,6 +2907,13 @@ mlxcx_buf_destroy(mlxcx_t *mlxp, mlxcx_buffer_t *b)
 	if (b->mlb_state == MLXCX_BUFFER_FREE) {
 		list_remove(&s->mlbs_free, b);
 		mlxcx_bufshard_adjust_total(s, -1);
+	}
+
+	if (b->mlb_sqe != NULL) {
+		kmem_free(b->mlb_sqe, b->mlb_sqe_size);
+		b->mlb_sqe = NULL;
+		b->mlb_sqe_size = 0;
+		b->mlb_sqe_count = 0;
 	}
 
 	/*

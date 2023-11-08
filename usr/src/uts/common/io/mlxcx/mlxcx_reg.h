@@ -404,6 +404,8 @@ typedef enum {
 
 #define	MLXCX_WQE_OCTOWORD	16
 #define	MLXCX_SQE_MAX_DS	((1 << 6) - 1)
+
+#define	MLXCX_SQE_BUF		4
 /*
  * Calculate the max number of address pointers in a single ethernet
  * send message. This is the remainder from MLXCX_SQE_MAX_DS
