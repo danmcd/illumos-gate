@@ -627,30 +627,58 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 	mlxcx_t *mlxp = sq->mlwq_mlx;
 	mlxcx_completion_queue_t *cq;
 	mlxcx_buffer_t *b;
-	mac_header_info_t mhi;
+	mac_ether_offload_info_t meoi;
 	mblk_t *kmp, *nmp;
-	uint8_t inline_hdrs[MLXCX_MAX_INLINE_HEADERLEN];
-	size_t inline_hdrlen, rem, off;
-	uint32_t chkflags = 0;
+	size_t rem, off;
 	boolean_t ok;
 	size_t take = 0;
 	uint_t bcount;
+	mlxcx_tx_ctx_t ctx;
 
 	VERIFY(mp->b_next == NULL);
 
-	mac_hcksum_get(mp, NULL, NULL, NULL, NULL, &chkflags);
+	mac_hcksum_get(mp, NULL, NULL, NULL, NULL, &ctx.mtc_chkflags);
+	mac_lso_get(mp, &ctx.mtc_mss, &ctx.mtc_lsoflags);
 
-	if (mac_vlan_header_info(mlxp->mlx_mac_hdl, mp, &mhi) != 0) {
+	if (mac_ether_offload_info(mp, &meoi) != 0 ||
+	    (meoi.meoi_flags & MEOI_L2INFO_SET) == 0) {
 		/*
 		 * We got given a frame without a valid L2 header on it. We
 		 * can't really transmit that (mlx parts don't like it), so
 		 * we will just drop it on the floor.
 		 */
+		mlxcx_warn(mlxp, "!tried to tx packet with no valid L2 header;"
+		    " dropping it on the floor");
 		freemsg(mp);
 		return (NULL);
 	}
 
-	inline_hdrlen = rem = mhi.mhi_hdrsize;
+	ctx.mtc_inline_hdrlen = meoi.meoi_l2hlen;
+
+	/*
+	 * If we're doing LSO, we need to find the end of the TCP header, and
+	 * inline up to that point.
+	 */
+	if (ctx.mtc_lsoflags & HW_LSO) {
+		if ((meoi.meoi_flags & MEOI_L3INFO_SET) == 0 ||
+		    (meoi.meoi_flags & MEOI_L4INFO_SET) == 0) {
+			mlxcx_warn(mlxp, "!tried to tx LSO packet with no "
+			    "valid L3/L4 headers; dropping it on the floor");
+			freemsg(mp);
+			return (NULL);
+		}
+		ctx.mtc_inline_hdrlen += meoi.meoi_l3hlen + meoi.meoi_l4hlen;
+	}
+
+	if (ctx.mtc_inline_hdrlen > MLXCX_MAX_INLINE_HEADERLEN) {
+		mlxcx_warn(mlxp, "!tried to tx LSO packet with headers that "
+		    "are too long (%u bytes, max is %u); dropping it on the "
+		    "floor", ctx.mtc_inline_hdrlen, MLXCX_MAX_INLINE_HEADERLEN);
+		freemsg(mp);
+		return (NULL);
+	}
+
+	rem = ctx.mtc_inline_hdrlen;
 
 	kmp = mp;
 	off = 0;
@@ -661,7 +689,7 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		take = sz;
 		if (take > rem)
 			take = rem;
-		bcopy(kmp->b_rptr, inline_hdrs + off, take);
+		bcopy(kmp->b_rptr, ctx.mtc_inline_hdrs + off, take);
 		rem -= take;
 		off += take;
 		if (take == sz) {
@@ -676,8 +704,12 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		return (mp);
 	}
 
-	(void) mlxcx_buf_prepare_sqe(mlxp, sq, b, inline_hdrs, inline_hdrlen,
-	    chkflags);
+	if (!mlxcx_buf_prepare_sqe(mlxp, sq, b, &ctx)) {
+		mlxcx_warn(mlxp, "!tried to tx packet that couldn't fit in "
+		    "an SQE, dropping");
+		freemsg(mp);
+		return (NULL);
+	}
 
 	mutex_enter(&sq->mlwq_mtx);
 	VERIFY3U(sq->mlwq_inline_mode, <=, MLXCX_ETH_INLINE_L2);
@@ -716,8 +748,7 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		goto blocked;
 	}
 
-	ok = mlxcx_sq_add_buffer(mlxp, sq, inline_hdrs, inline_hdrlen,
-	    chkflags, b);
+	ok = mlxcx_sq_add_buffer(mlxp, sq, b);
 	if (!ok) {
 		atomic_or_uint(&cq->mlcq_state, MLXCX_CQ_BLOCKED_MAC);
 		atomic_or_uint(&sq->mlwq_state, MLXCX_WQ_BLOCKED_MAC);
@@ -1247,6 +1278,7 @@ mlxcx_mac_getcapab(void *arg, mac_capab_t cap, void *cap_data)
 	mac_capab_rings_t *cap_rings;
 	mac_capab_led_t *cap_leds;
 	mac_capab_transceiver_t *cap_txr;
+	mac_capab_lso_t *cap_lso;
 	uint_t i, n = 0;
 
 	switch (cap) {
@@ -1279,10 +1311,10 @@ mlxcx_mac_getcapab(void *arg, mac_capab_t cap, void *cap_data)
 		break;
 
 	case MAC_CAPAB_HCKSUM:
-		if (mlxp->mlx_caps->mlc_checksum) {
-			*(uint32_t *)cap_data = HCKSUM_INET_FULL_V4 |
-			    HCKSUM_INET_FULL_V6 | HCKSUM_IPHDRCKSUM;
-		}
+		if (!mlxp->mlx_caps->mlc_checksum)
+			return (B_FALSE);
+		*(uint32_t *)cap_data = HCKSUM_INET_FULL_V4 |
+		    HCKSUM_INET_FULL_V6 | HCKSUM_IPHDRCKSUM;
 		break;
 
 	case MAC_CAPAB_LED:
@@ -1301,6 +1333,24 @@ mlxcx_mac_getcapab(void *arg, mac_capab_t cap, void *cap_data)
 		cap_txr->mct_ntransceivers = 1;
 		cap_txr->mct_info = mlxcx_mac_txr_info;
 		cap_txr->mct_read = mlxcx_mac_txr_read;
+		break;
+
+	case MAC_CAPAB_LSO:
+		cap_lso = cap_data;
+
+		if (!mlxp->mlx_caps->mlc_lso)
+			return (B_FALSE);
+
+		cap_lso->lso_flags = LSO_TX_BASIC_TCP_IPV4 |
+		    LSO_TX_BASIC_TCP_IPV6;
+		/*
+		 * Cap LSO sends at 64k due to limitations in the TCP stack
+		 * (full length needs to fit in an IP header apparently)
+		 */
+		cap_lso->lso_basic_tcp_ipv4.lso_max =
+		    MIN(mlxp->mlx_caps->mlc_max_lso_size, UINT16_MAX);
+		cap_lso->lso_basic_tcp_ipv6.lso_max =
+		    MIN(mlxp->mlx_caps->mlc_max_lso_size, UINT16_MAX);
 		break;
 
 	default:

@@ -405,7 +405,7 @@ typedef enum {
 #define	MLXCX_WQE_OCTOWORD	16
 #define	MLXCX_SQE_MAX_DS	((1 << 6) - 1)
 
-#define	MLXCX_SQE_BUF		4
+#define	MLXCX_SQE_BUF		16
 /*
  * Calculate the max number of address pointers in a single ethernet
  * send message. This is the remainder from MLXCX_SQE_MAX_DS
@@ -458,16 +458,16 @@ typedef enum {
 /* CSTYLED */
 #define	MLXCX_SQE_ETH_INLINE_HDR_SZ	(bitdef_t){0, 0x03ff}
 #define	MLXCX_SQE_ETH_SZFLAG_VLAN	(1 << 15)
-#define	MLXCX_MAX_INLINE_HEADERLEN	64
+#define	MLXCX_MAX_INLINE_HEADERLEN	(2 + MLXCX_WQE_OCTOWORD * 12)
 
 typedef struct {
 	uint8_t		mles_rsvd[4];
 	bits8_t		mles_csflags;
 	uint8_t		mles_rsvd2[1];
-	uint16_t	mles_mss;
+	uint16be_t	mles_mss;
 	uint8_t		mles_rsvd3[4];
 	bits16_t	mles_szflags;
-	uint8_t		mles_inline_headers[18];
+	uint8_t		mles_inline_headers[2];
 } mlxcx_wqe_eth_seg_t;
 
 typedef struct {
@@ -481,7 +481,7 @@ typedef struct {
 typedef struct {
 	mlxcx_wqe_control_seg_t		mlsqe_control;
 	mlxcx_wqe_eth_seg_t		mlsqe_eth;
-	mlxcx_wqe_data_seg_t		mlsqe_data[1];
+	mlxcx_wqe_data_seg_t		mlsqe_data[2];
 } mlxcx_sendq_ent_t;
 
 typedef struct {

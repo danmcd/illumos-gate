@@ -3746,7 +3746,7 @@ CTASSERT(sizeof (mlxcx_completionq_error_ent_t) ==
 CTASSERT(sizeof (mlxcx_wqe_control_seg_t) == (1 << 4));
 
 CTASSERT(offsetof(mlxcx_wqe_eth_seg_t, mles_inline_headers) == 0x0e);
-CTASSERT(sizeof (mlxcx_wqe_eth_seg_t) == (1 << 5));
+CTASSERT(sizeof (mlxcx_wqe_eth_seg_t) == (1 << 4));
 
 CTASSERT(sizeof (mlxcx_wqe_data_seg_t) == (1 << 4));
 
