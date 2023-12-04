@@ -1674,6 +1674,8 @@ mlxcx_sq_add_buffer(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 		return (B_FALSE);
 	}
 
+	MLXCX_PTIMER(b0->mlb_t, MLXCX_BUF_TIMER_POST_SQE_IN_RING);
+
 	/*
 	 * Stash the bufbgen counter, which is incremented every time
 	 * buffers_b is merged into buffers. This lets us easily tell which
@@ -2285,6 +2287,11 @@ mlxcx_bind_or_copy_mblk(mlxcx_t *mlxp, mlxcx_work_queue_t *wq,
 	size_t sz;
 	boolean_t ret;
 
+#if defined(MLXCX_PERF_TIMERS)
+	hrtime_t t0, t1;
+	t0 = gethrtime();
+#endif
+
 	rptr = mp->b_rptr;
 	sz = MBLKL(mp);
 
@@ -2299,17 +2306,37 @@ mlxcx_bind_or_copy_mblk(mlxcx_t *mlxp, mlxcx_work_queue_t *wq,
 
 	if (sz < mlxp->mlx_props.mldp_tx_bind_threshold) {
 		b = mlxcx_copy_data(mlxp, wq, rptr, sz);
+#if defined(MLXCX_PERF_TIMERS)
+		t1 = gethrtime();
+		b->mlb_t[MLXCX_BUF_TIMER_COPY_TOTAL] += t1 - t0;
+#endif
 	} else {
 		b = mlxcx_buf_take_foreign(mlxp, wq);
 		if (b == NULL)
 			return (NULL);
+#if defined(MLXCX_PERF_TIMERS)
+		t1 = gethrtime();
+		b->mlb_t[MLXCX_BUF_TIMER_TAKE_FOREIGN_TOTAL] += t1 - t0;
+		t0 = t1;
+#endif
 
 		ret = mlxcx_dma_bind_mblk(mlxp, &b->mlb_dma, mp, off, B_TRUE);
+
+#if defined(MLXCX_PERF_TIMERS)
+		t1 = gethrtime();
+		b->mlb_t[MLXCX_BUF_TIMER_BIND_MBLK_TOTAL] += t1 - t0;
+		t0 = t1;
+#endif
 
 		if (!ret) {
 			mlxcx_buf_return(mlxp, b);
 
 			b = mlxcx_copy_data(mlxp, wq, rptr, sz);
+
+#if defined(MLXCX_PERF_TIMERS)
+			t1 = gethrtime();
+			b->mlb_t[MLXCX_BUF_TIMER_COPY_TOTAL] += t1 - t0;
+#endif
 		}
 	}
 
@@ -2337,6 +2364,8 @@ mlxcx_buf_prepare_sqe(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 		    sizeof (mlxcx_sendq_ent_t);
 		b0->mlb_sqe = kmem_zalloc(b0->mlb_sqe_size, KM_SLEEP);
 	}
+
+	MLXCX_PTIMER(b0->mlb_t, MLXCX_BUF_TIMER_POST_SQE_BUF);
 
 	ents = 1;
 	ent0 = &b0->mlb_sqe[0];
@@ -2417,6 +2446,8 @@ mlxcx_buf_prepare_sqe(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 		ent0->mlsqe_control.mlcs_opcode = MLXCX_WQE_OP_LSO;
 		ent0->mlsqe_eth.mles_mss = to_be16(ctx->mtc_mss);
 	}
+
+	MLXCX_PTIMER(b0->mlb_t, MLXCX_BUF_TIMER_POST_PREPARE_SQE_INLINE);
 
 	b = b0;
 	while (b != NULL) {
@@ -2502,8 +2533,17 @@ mlxcx_buf_bind_or_copy(mlxcx_t *mlxp, mlxcx_work_queue_t *wq,
 		b->mlb_tx_head = b0;
 		b->mlb_used = MBLKL(mp) - offset;
 
-		if (!first)
+		if (!first) {
 			list_insert_tail(&b0->mlb_tx_chain, b);
+#if defined(MLXCX_PERF_TIMERS)
+			b0->mlb_t[MLXCX_BUF_TIMER_COPY_TOTAL] +=
+			    b->mlb_t[MLXCX_BUF_TIMER_COPY_TOTAL];
+			b0->mlb_t[MLXCX_BUF_TIMER_TAKE_FOREIGN_TOTAL] +=
+			    b->mlb_t[MLXCX_BUF_TIMER_TAKE_FOREIGN_TOTAL];
+			b0->mlb_t[MLXCX_BUF_TIMER_BIND_MBLK_TOTAL] +=
+			    b->mlb_t[MLXCX_BUF_TIMER_BIND_MBLK_TOTAL];
+#endif
+		}
 		first = B_FALSE;
 		offset = 0;
 
@@ -2839,6 +2879,10 @@ mlxcx_buf_return_step2(mlxcx_t *mlxp, mlxcx_buffer_t *b)
 		break;
 	}
 
+#if defined(MLXCX_PERF_TIMERS)
+	bzero(b->mlb_t, sizeof (b->mlb_t));
+#endif
+
 	list_insert_tail(&s->mlbs_free, b);
 	cv_broadcast(&s->mlbs_free_nonempty);
 }
@@ -2858,6 +2902,7 @@ mlxcx_buf_return_batch_flush_shard(mlxcx_t *mlxp,
 	}
 	mutex_enter(&mbrb->mbrb_shard[i]->mlbs_mtx);
 	while ((b = list_remove_head(&mbrb->mbrb_list[i]))) {
+		MLXCX_PTIMER(b->mlb_t, MLXCX_BUF_TIMER_PRE_STEP2);
 		mlxcx_buf_return_step2(mlxp, b);
 	}
 	mutex_exit(&mbrb->mbrb_shard[i]->mlbs_mtx);

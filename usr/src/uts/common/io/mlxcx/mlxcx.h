@@ -246,6 +246,21 @@ extern uint_t mlxcx_stuck_intr_count;
  */
 #define	MLXCX_FUNC_ID_MAX	0
 
+#if defined(DEBUG)
+#define	MLXCX_PERF_TIMERS
+#endif
+
+#if defined(MLXCX_PERF_TIMERS)
+static inline void
+mlxcx_ptimer(hrtime_t *arr, uint idx)
+{
+	arr[idx] = gethrtime();
+}
+#define	MLXCX_PTIMER(A, I)	mlxcx_ptimer(A, I)
+#else
+#define	MLXCX_PTIMER(A, I)
+#endif
+
 /*
  * Forwards
  */
@@ -547,6 +562,25 @@ typedef struct mlxcx_buf_shard {
 	kcondvar_t		mlbs_free_nonempty;
 } mlxcx_buf_shard_t;
 
+typedef enum {
+	MLXCX_BUF_TIMER_PRE_RING_TX,
+	MLXCX_BUF_TIMER_POST_OFFLOAD_INFO,
+	MLXCX_BUF_TIMER_POST_INLINE_BCOPY,
+	MLXCX_BUF_TIMER_POST_BUF_BIND_COPY,
+	MLXCX_BUF_TIMER_POST_SQE_BUF,
+	MLXCX_BUF_TIMER_POST_PREPARE_SQE_INLINE,
+	MLXCX_BUF_TIMER_POST_PREPARE_SQE,
+	MLXCX_BUF_TIMER_POST_WQ_MTX,
+	MLXCX_BUF_TIMER_POST_SQE_IN_RING,
+	MLXCX_BUF_TIMER_POST_SQ_ADD_BUF,
+	MLXCX_BUF_TIMER_PRE_TX_COMP,
+	MLXCX_BUF_TIMER_PRE_STEP2,
+	MLXCX_BUF_TIMER_COPY_TOTAL,
+	MLXCX_BUF_TIMER_TAKE_FOREIGN_TOTAL,
+	MLXCX_BUF_TIMER_BIND_MBLK_TOTAL,
+	MLXCX_BUF_TIMER_MAX
+} mlxcx_buf_timer_t;
+
 typedef struct mlxcx_buffer {
 	mlxcx_buf_shard_t	*mlb_shard;
 	list_node_t		mlb_entry;
@@ -579,6 +613,10 @@ typedef struct mlxcx_buffer {
 	};
 	size_t			mlb_sqe_size;
 	uint_t			mlb_sqe_count;
+
+#if defined(MLXCX_PERF_TIMERS)
+	hrtime_t		mlb_t[MLXCX_BUF_TIMER_MAX];
+#endif
 } mlxcx_buffer_t;
 
 typedef enum {

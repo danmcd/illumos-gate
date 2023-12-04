@@ -981,6 +981,8 @@ lookagain:
 		list_remove(&mlcq->mlcq_buffers, buf);
 		bufcnt++;
 
+		MLXCX_PTIMER(buf->mlb_t, MLXCX_BUF_TIMER_PRE_TX_COMP);
+
 		switch (mlcq->mlcq_wq->mlwq_type) {
 		case MLXCX_WQ_TYPE_SENDQ:
 			mlxcx_tx_completion(mlxp, mlcq, cent, buf, &rbatch);

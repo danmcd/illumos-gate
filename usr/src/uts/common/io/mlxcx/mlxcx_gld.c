@@ -634,8 +634,17 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 	size_t take = 0;
 	uint_t bcount;
 	mlxcx_tx_ctx_t ctx;
+#if defined(MLXCX_PERF_TIMERS)
+	hrtime_t times[MLXCX_BUF_TIMER_MAX];
+	uint i;
+#endif
 
 	VERIFY(mp->b_next == NULL);
+
+#if defined(MLXCX_PERF_TIMERS)
+	bzero(times, sizeof (times));
+	times[MLXCX_BUF_TIMER_PRE_RING_TX] = gethrtime();
+#endif
 
 	mac_hcksum_get(mp, NULL, NULL, NULL, NULL, &ctx.mtc_chkflags);
 	mac_lso_get(mp, &ctx.mtc_mss, &ctx.mtc_lsoflags);
@@ -652,6 +661,10 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		freemsg(mp);
 		return (NULL);
 	}
+
+#if defined(MLXCX_PERF_TIMERS)
+	times[MLXCX_BUF_TIMER_POST_OFFLOAD_INFO] = gethrtime();
+#endif
 
 	ctx.mtc_inline_hdrlen = meoi.meoi_l2hlen;
 
@@ -698,11 +711,21 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		}
 	}
 
+	MLXCX_PTIMER(times, MLXCX_BUF_TIMER_POST_INLINE_BCOPY);
+
 	bcount = mlxcx_buf_bind_or_copy(mlxp, sq, mp, kmp, take, &b);
 	if (bcount == 0) {
 		atomic_or_uint(&sq->mlwq_state, MLXCX_WQ_BLOCKED_MAC);
 		return (mp);
 	}
+
+	MLXCX_PTIMER(times, MLXCX_BUF_TIMER_POST_BUF_BIND_COPY);
+
+#if defined(MLXCX_PERF_TIMERS)
+	/* Copy our temporary timers over to the buffer_t */
+	for (i = 0; i <= MLXCX_BUF_TIMER_POST_BUF_BIND_COPY; ++i)
+		b->mlb_t[i] = times[i];
+#endif
 
 	if (!mlxcx_buf_prepare_sqe(mlxp, sq, b, &ctx)) {
 		mlxcx_warn(mlxp, "!tried to tx packet that couldn't fit in "
@@ -711,9 +734,13 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		return (NULL);
 	}
 
+	MLXCX_PTIMER(b->mlb_t, MLXCX_BUF_TIMER_POST_PREPARE_SQE);
+
 	mutex_enter(&sq->mlwq_mtx);
 	VERIFY3U(sq->mlwq_inline_mode, <=, MLXCX_ETH_INLINE_L2);
 	cq = sq->mlwq_cq;
+
+	MLXCX_PTIMER(b->mlb_t, MLXCX_BUF_TIMER_POST_WQ_MTX);
 
 	/*
 	 * state is a single int, so read-only access without the CQ lock
@@ -756,6 +783,7 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 	}
 
 	mutex_exit(&sq->mlwq_mtx);
+	MLXCX_PTIMER(b->mlb_t, MLXCX_BUF_TIMER_POST_SQ_ADD_BUF);
 
 	return (NULL);
 
