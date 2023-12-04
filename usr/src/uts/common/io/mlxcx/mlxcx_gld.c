@@ -628,7 +628,7 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 	mlxcx_completion_queue_t *cq;
 	mlxcx_buffer_t *b;
 	mac_ether_offload_info_t meoi;
-	mblk_t *kmp, *nmp;
+	mblk_t *kmp;
 	size_t rem, off;
 	boolean_t ok;
 	size_t take = 0;
@@ -698,7 +698,7 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 		}
 	}
 
-	bcount = mlxcx_buf_bind_or_copy(mlxp, sq, kmp, take, &b);
+	bcount = mlxcx_buf_bind_or_copy(mlxp, sq, mp, kmp, take, &b);
 	if (bcount == 0) {
 		atomic_or_uint(&sq->mlwq_state, MLXCX_WQ_BLOCKED_MAC);
 		return (mp);
@@ -756,15 +756,6 @@ mlxcx_mac_ring_tx(void *arg, mblk_t *mp)
 	}
 
 	mutex_exit(&sq->mlwq_mtx);
-
-	/*
-	 * Now that we've successfully enqueued the rest of the packet,
-	 * free any mblks that we cut off while inlining headers.
-	 */
-	for (; mp != kmp; mp = nmp) {
-		nmp = mp->b_cont;
-		freeb(mp);
-	}
 
 	return (NULL);
 

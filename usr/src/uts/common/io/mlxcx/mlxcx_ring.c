@@ -2475,7 +2475,7 @@ mlxcx_buf_prepare_sqe(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 
 uint_t
 mlxcx_buf_bind_or_copy(mlxcx_t *mlxp, mlxcx_work_queue_t *wq,
-    mblk_t *mpb, size_t off, mlxcx_buffer_t **bp)
+    mblk_t *mp0, mblk_t *mpb, size_t off, mlxcx_buffer_t **bp)
 {
 	mlxcx_buffer_t *b, *b0 = NULL;
 	boolean_t first = B_TRUE;
@@ -2498,7 +2498,7 @@ mlxcx_buf_bind_or_copy(mlxcx_t *mlxp, mlxcx_work_queue_t *wq,
 		if (!first)
 			b->mlb_state = MLXCX_BUFFER_ON_CHAIN;
 
-		b->mlb_tx_mp = mp;
+		b->mlb_tx_mp = first ? mp0 : mp;
 		b->mlb_tx_head = b0;
 		b->mlb_used = MBLKL(mp) - offset;
 
@@ -2531,7 +2531,7 @@ mlxcx_buf_bind_or_copy(mlxcx_t *mlxp, mlxcx_work_queue_t *wq,
 			freemsg(mp);
 			return (0);
 		}
-		freemsg(mpb);
+		freemsg(mp0);
 
 		b0->mlb_tx_mp = mp;
 		b0->mlb_tx_head = b0;

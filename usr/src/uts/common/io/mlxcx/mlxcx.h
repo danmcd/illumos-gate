@@ -1416,7 +1416,7 @@ extern void mlxcx_shard_ready(mlxcx_buf_shard_t *);
 extern void mlxcx_shard_draining(mlxcx_buf_shard_t *);
 
 extern uint_t mlxcx_buf_bind_or_copy(mlxcx_t *, mlxcx_work_queue_t *,
-    mblk_t *, size_t, mlxcx_buffer_t **);
+    mblk_t *, mblk_t *, size_t, mlxcx_buffer_t **);
 
 extern boolean_t mlxcx_rx_group_setup(mlxcx_t *, mlxcx_ring_group_t *);
 extern boolean_t mlxcx_tx_group_setup(mlxcx_t *, mlxcx_ring_group_t *);
