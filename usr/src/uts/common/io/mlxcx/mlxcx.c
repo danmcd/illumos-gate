@@ -1490,10 +1490,11 @@ mlxcx_eq_check(void *arg)
 {
 	mlxcx_t *mlxp = (mlxcx_t *)arg;
 	mlxcx_event_queue_t *eq;
-	mlxcx_eventq_ctx_t ctx;
+	mlxcx_eventq_ctx_t *ctx;
 	const char *str;
-
 	uint_t i;
+
+	ctx = kmem_zalloc(sizeof (*ctx), KM_SLEEP);
 
 	for (i = 0; i < mlxp->mlx_intr_count; ++i) {
 		eq = &mlxp->mlx_eqs[i];
@@ -1508,11 +1509,11 @@ mlxcx_eq_check(void *arg)
 		 */
 		ASSERT0(eq->mleq_state & MLXCX_EQ_DESTROYED);
 
-		if (!mlxcx_cmd_query_eq(mlxp, eq, &ctx))
+		if (!mlxcx_cmd_query_eq(mlxp, eq, ctx))
 			continue;
 
 		str = "???";
-		switch (ctx.mleqc_status) {
+		switch (ctx->mleqc_status) {
 		case MLXCX_EQ_STATUS_OK:
 			break;
 		case MLXCX_EQ_STATUS_WRITE_FAILURE:
@@ -1520,14 +1521,14 @@ mlxcx_eq_check(void *arg)
 			break;
 		}
 
-		if (ctx.mleqc_status != MLXCX_EQ_STATUS_OK) {
+		if (ctx->mleqc_status != MLXCX_EQ_STATUS_OK) {
 			mlxcx_fm_qstate_ereport(mlxp, "event",
-			    eq->mleq_num, str, ctx.mleqc_status);
+			    eq->mleq_num, str, ctx->mleqc_status);
 			mlxcx_warn(mlxp, "EQ %u is in bad status: %x (%s)",
-			    eq->mleq_intr_index, ctx.mleqc_status, str);
+			    eq->mleq_intr_index, ctx->mleqc_status, str);
 		}
 
-		if (ctx.mleqc_state != MLXCX_EQ_ST_ARMED &&
+		if (ctx->mleqc_state != MLXCX_EQ_ST_ARMED &&
 		    (eq->mleq_state & MLXCX_EQ_ARMED)) {
 			if (eq->mleq_cc == eq->mleq_check_disarm_cc &&
 			    ++eq->mleq_check_disarm_cnt >= 3) {
@@ -1541,6 +1542,8 @@ mlxcx_eq_check(void *arg)
 			eq->mleq_check_disarm_cnt = 0;
 		}
 	}
+
+	kmem_free(ctx, sizeof (*ctx));
 }
 
 static void
@@ -1548,9 +1551,11 @@ mlxcx_cq_check(void *arg)
 {
 	mlxcx_t *mlxp = (mlxcx_t *)arg;
 	mlxcx_completion_queue_t *cq;
-	mlxcx_completionq_ctx_t ctx;
+	mlxcx_completionq_ctx_t *ctx;
 	const char *str, *type;
 	uint_t v;
+
+	ctx = kmem_zalloc(sizeof (*ctx), KM_SLEEP);
 
 	for (cq = list_head(&mlxp->mlx_cqs); cq != NULL;
 	    cq = list_next(&mlxp->mlx_cqs, cq)) {
@@ -1569,7 +1574,7 @@ mlxcx_cq_check(void *arg)
 		if (cq->mlcq_fm_repd_qstate)
 			continue;
 
-		if (!mlxcx_cmd_query_cq(mlxp, cq, &ctx))
+		if (!mlxcx_cmd_query_cq(mlxp, cq, ctx))
 			continue;
 
 		if (cq->mlcq_wq != NULL) {
@@ -1585,7 +1590,7 @@ mlxcx_cq_check(void *arg)
 		}
 
 		str = "???";
-		v = get_bits32(ctx.mlcqc_flags, MLXCX_CQ_CTX_STATUS);
+		v = get_bits32(ctx->mlcqc_flags, MLXCX_CQ_CTX_STATUS);
 		switch (v) {
 		case MLXCX_CQC_STATUS_OK:
 			break;
@@ -1608,7 +1613,7 @@ mlxcx_cq_check(void *arg)
 			cq->mlcq_fm_repd_qstate = B_TRUE;
 		}
 
-		v = get_bits32(ctx.mlcqc_flags, MLXCX_CQ_CTX_STATE);
+		v = get_bits32(ctx->mlcqc_flags, MLXCX_CQ_CTX_STATE);
 		if (v != MLXCX_CQC_STATE_ARMED &&
 		    (cq->mlcq_state & MLXCX_CQ_ARMED) &&
 		    !(cq->mlcq_state & MLXCX_CQ_POLLING)) {
@@ -1624,19 +1629,25 @@ mlxcx_cq_check(void *arg)
 			cq->mlcq_check_disarm_cc = 0;
 		}
 	}
+
+	kmem_free(ctx, sizeof (*ctx));
 }
 
 void
 mlxcx_check_sq(mlxcx_t *mlxp, mlxcx_work_queue_t *sq)
 {
-	mlxcx_sq_ctx_t ctx;
+	mlxcx_sq_ctx_t *ctx;
 	mlxcx_sq_state_t state;
 
-	if (!mlxcx_cmd_query_sq(mlxp, sq, &ctx))
-		return;
+	ctx = kmem_zalloc(sizeof (mlxcx_sq_ctx_t), KM_SLEEP);
 
-	ASSERT3U(from_be24(ctx.mlsqc_cqn), ==, sq->mlwq_cq->mlcq_num);
-	state = get_bits32(ctx.mlsqc_flags, MLXCX_SQ_STATE);
+	if (!mlxcx_cmd_query_sq(mlxp, sq, ctx)) {
+		kmem_free(ctx, sizeof (*ctx));
+		return;
+	}
+
+	ASSERT3U(from_be24(ctx->mlsqc_cqn), ==, sq->mlwq_cq->mlcq_num);
+	state = get_bits32(ctx->mlsqc_flags, MLXCX_SQ_STATE);
 	switch (state) {
 	case MLXCX_SQ_STATE_RST:
 		if (sq->mlwq_state & MLXCX_WQ_STARTED) {
@@ -1663,20 +1674,25 @@ mlxcx_check_sq(mlxcx_t *mlxp, mlxcx_work_queue_t *sq)
 		sq->mlwq_fm_repd_qstate = B_TRUE;
 		break;
 	}
+
+	kmem_free(ctx, sizeof (mlxcx_sq_ctx_t));
 }
 
 void
 mlxcx_check_rq(mlxcx_t *mlxp, mlxcx_work_queue_t *rq)
 {
-	mlxcx_rq_ctx_t ctx;
+	mlxcx_rq_ctx_t *ctx;
 	mlxcx_rq_state_t state;
 
+	ctx = kmem_zalloc(sizeof (*ctx), KM_SLEEP);
 
-	if (!mlxcx_cmd_query_rq(mlxp, rq, &ctx))
+	if (!mlxcx_cmd_query_rq(mlxp, rq, ctx)) {
+		kmem_free(ctx, sizeof (*ctx));
 		return;
+	}
 
-	ASSERT3U(from_be24(ctx.mlrqc_cqn), ==, rq->mlwq_cq->mlcq_num);
-	state = get_bits32(ctx.mlrqc_flags, MLXCX_RQ_STATE);
+	ASSERT3U(from_be24(ctx->mlrqc_cqn), ==, rq->mlwq_cq->mlcq_num);
+	state = get_bits32(ctx->mlrqc_flags, MLXCX_RQ_STATE);
 	switch (state) {
 	case MLXCX_RQ_STATE_RST:
 		if (rq->mlwq_state & MLXCX_WQ_STARTED) {
@@ -1703,6 +1719,8 @@ mlxcx_check_rq(mlxcx_t *mlxp, mlxcx_work_queue_t *rq)
 		rq->mlwq_fm_repd_qstate = B_TRUE;
 		break;
 	}
+
+	kmem_free(ctx, sizeof (*ctx));
 }
 
 static void

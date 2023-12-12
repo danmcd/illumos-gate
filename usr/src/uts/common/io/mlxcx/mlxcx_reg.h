@@ -642,7 +642,7 @@ typedef enum {
 						.bit_shift = 25, \
 						.bit_mask = 0x06000000 }
 
-#define	MLXCX_WORKQ_CTX_MAX_ADDRESSES		128
+#define	MLXCX_WORKQ_CTX_MAX_ADDRESSES		1024
 
 typedef struct mlxcx_workq_ctx {
 	bits32_t	mlwqc_flags;
@@ -1590,7 +1590,7 @@ typedef struct {
 /*
  * This is an artificial limit that we're imposing on our actions.
  */
-#define	MLXCX_CREATE_QUEUE_MAX_PAGES	128
+#define	MLXCX_CREATE_QUEUE_MAX_PAGES	1024
 
 typedef struct {
 	mlxcx_cmd_in_t	mlxi_create_eq_head;

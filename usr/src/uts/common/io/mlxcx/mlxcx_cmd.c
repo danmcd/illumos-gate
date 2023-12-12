@@ -2146,7 +2146,7 @@ boolean_t
 mlxcx_cmd_create_eq(mlxcx_t *mlxp, mlxcx_event_queue_t *mleq)
 {
 	mlxcx_cmd_t cmd;
-	mlxcx_cmd_create_eq_in_t in;
+	mlxcx_cmd_create_eq_in_t *in;
 	mlxcx_cmd_create_eq_out_t out;
 	boolean_t ret;
 	mlxcx_eventq_ctx_t *ctx;
@@ -2154,7 +2154,7 @@ mlxcx_cmd_create_eq(mlxcx_t *mlxp, mlxcx_event_queue_t *mleq)
 	const ddi_dma_cookie_t *c;
 	uint64_t pa, npages;
 
-	bzero(&in, sizeof (in));
+	in = kmem_zalloc(sizeof (mlxcx_cmd_create_eq_in_t), KM_SLEEP);
 	bzero(&out, sizeof (out));
 
 	ASSERT(mutex_owned(&mleq->mleq_mtx));
@@ -2162,15 +2162,15 @@ mlxcx_cmd_create_eq(mlxcx_t *mlxp, mlxcx_event_queue_t *mleq)
 	VERIFY0(mleq->mleq_state & MLXCX_EQ_CREATED);
 
 	mlxcx_cmd_init(mlxp, &cmd);
-	mlxcx_cmd_in_header_init(&cmd, &in.mlxi_create_eq_head,
+	mlxcx_cmd_in_header_init(&cmd, &in->mlxi_create_eq_head,
 	    MLXCX_OP_CREATE_EQ, 0);
 
-	ctx = &in.mlxi_create_eq_context;
+	ctx = &in->mlxi_create_eq_context;
 	ctx->mleqc_uar_page = to_be24(mleq->mleq_uar->mlu_num);
 	ctx->mleqc_log_eq_size = mleq->mleq_entshift;
 	ctx->mleqc_intr = mleq->mleq_intr_index;
 
-	in.mlxi_create_eq_event_bitmask = to_be64(mleq->mleq_events);
+	in->mlxi_create_eq_event_bitmask = to_be64(mleq->mleq_events);
 
 	npages = 0;
 	c = NULL;
@@ -2180,7 +2180,7 @@ mlxcx_cmd_create_eq(mlxcx_t *mlxp, mlxcx_event_queue_t *mleq)
 		while (rem > 0) {
 			ASSERT3U(pa & 0xfff, ==, 0);
 			ASSERT3U(rem, >=, MLXCX_HW_PAGE_SIZE);
-			in.mlxi_create_eq_pas[npages++] = to_be64(pa);
+			in->mlxi_create_eq_pas[npages++] = to_be64(pa);
 			rem -= MLXCX_HW_PAGE_SIZE;
 			pa += MLXCX_HW_PAGE_SIZE;
 		}
@@ -2190,8 +2190,9 @@ mlxcx_cmd_create_eq(mlxcx_t *mlxp, mlxcx_event_queue_t *mleq)
 	insize = offsetof(mlxcx_cmd_create_eq_in_t, mlxi_create_eq_pas) +
 	    sizeof (uint64_t) * npages;
 
-	if (!mlxcx_cmd_send(mlxp, &cmd, &in, insize, &out, sizeof (out))) {
+	if (!mlxcx_cmd_send(mlxp, &cmd, in, insize, &out, sizeof (out))) {
 		mlxcx_cmd_fini(mlxp, &cmd);
+		kmem_free(in, sizeof (*in));
 		return (B_FALSE);
 	}
 	mlxcx_cmd_wait(&cmd);
@@ -2202,6 +2203,7 @@ mlxcx_cmd_create_eq(mlxcx_t *mlxp, mlxcx_event_queue_t *mleq)
 		mleq->mleq_num = out.mlxo_create_eq_eqn;
 	}
 	mlxcx_cmd_fini(mlxp, &cmd);
+	kmem_free(in, sizeof (*in));
 	return (ret);
 }
 
@@ -2211,11 +2213,11 @@ mlxcx_cmd_query_eq(mlxcx_t *mlxp, mlxcx_event_queue_t *mleq,
 {
 	mlxcx_cmd_t cmd;
 	mlxcx_cmd_query_eq_in_t in;
-	mlxcx_cmd_query_eq_out_t out;
+	mlxcx_cmd_query_eq_out_t *out;
 	boolean_t ret;
 
 	bzero(&in, sizeof (in));
-	bzero(&out, sizeof (out));
+	out = kmem_zalloc(sizeof (mlxcx_cmd_query_eq_out_t), KM_SLEEP);
 
 	VERIFY(mleq->mleq_state & MLXCX_EQ_ALLOC);
 	VERIFY(mleq->mleq_state & MLXCX_EQ_CREATED);
@@ -2226,18 +2228,20 @@ mlxcx_cmd_query_eq(mlxcx_t *mlxp, mlxcx_event_queue_t *mleq,
 
 	in.mlxi_query_eq_eqn = mleq->mleq_num;
 
-	if (!mlxcx_cmd_send(mlxp, &cmd, &in, sizeof (in), &out, sizeof (out))) {
+	if (!mlxcx_cmd_send(mlxp, &cmd, &in, sizeof (in), out, sizeof (*out))) {
 		mlxcx_cmd_fini(mlxp, &cmd);
+		kmem_free(out, sizeof (*out));
 		return (B_FALSE);
 	}
 	mlxcx_cmd_wait(&cmd);
 
 	ret = mlxcx_cmd_evaluate(mlxp, &cmd);
 	if (ret) {
-		bcopy(&out.mlxo_query_eq_context, ctxp,
+		bcopy(&out->mlxo_query_eq_context, ctxp,
 		    sizeof (mlxcx_eventq_ctx_t));
 	}
 	mlxcx_cmd_fini(mlxp, &cmd);
+	kmem_free(out, sizeof (*out));
 	return (ret);
 }
 
@@ -2310,7 +2314,7 @@ boolean_t
 mlxcx_cmd_create_cq(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq)
 {
 	mlxcx_cmd_t cmd;
-	mlxcx_cmd_create_cq_in_t in;
+	mlxcx_cmd_create_cq_in_t *in;
 	mlxcx_cmd_create_cq_out_t out;
 	boolean_t ret;
 	mlxcx_completionq_ctx_t *ctx;
@@ -2318,7 +2322,7 @@ mlxcx_cmd_create_cq(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq)
 	const ddi_dma_cookie_t *c;
 	uint64_t pa, npages;
 
-	bzero(&in, sizeof (in));
+	in = kmem_zalloc(sizeof (mlxcx_cmd_create_cq_in_t), KM_SLEEP);
 	bzero(&out, sizeof (out));
 
 	ASSERT(mutex_owned(&mlcq->mlcq_mtx));
@@ -2326,10 +2330,10 @@ mlxcx_cmd_create_cq(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq)
 	VERIFY0(mlcq->mlcq_state & MLXCX_CQ_CREATED);
 
 	mlxcx_cmd_init(mlxp, &cmd);
-	mlxcx_cmd_in_header_init(&cmd, &in.mlxi_create_cq_head,
+	mlxcx_cmd_in_header_init(&cmd, &in->mlxi_create_cq_head,
 	    MLXCX_OP_CREATE_CQ, 0);
 
-	ctx = &in.mlxi_create_cq_context;
+	ctx = &in->mlxi_create_cq_context;
 	ctx->mlcqc_uar_page = to_be24(mlcq->mlcq_uar->mlu_num);
 	ctx->mlcqc_log_cq_size = mlcq->mlcq_entshift;
 	ctx->mlcqc_eqn = mlcq->mlcq_eq->mleq_num;
@@ -2348,7 +2352,7 @@ mlxcx_cmd_create_cq(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq)
 		while (rem > 0) {
 			ASSERT3U(pa & 0xfff, ==, 0);
 			ASSERT3U(rem, >=, MLXCX_HW_PAGE_SIZE);
-			in.mlxi_create_cq_pas[npages++] = to_be64(pa);
+			in->mlxi_create_cq_pas[npages++] = to_be64(pa);
 			rem -= MLXCX_HW_PAGE_SIZE;
 			pa += MLXCX_HW_PAGE_SIZE;
 		}
@@ -2358,8 +2362,9 @@ mlxcx_cmd_create_cq(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq)
 	insize = offsetof(mlxcx_cmd_create_cq_in_t, mlxi_create_cq_pas) +
 	    sizeof (uint64_t) * npages;
 
-	if (!mlxcx_cmd_send(mlxp, &cmd, &in, insize, &out, sizeof (out))) {
+	if (!mlxcx_cmd_send(mlxp, &cmd, in, insize, &out, sizeof (out))) {
 		mlxcx_cmd_fini(mlxp, &cmd);
+		kmem_free(in, sizeof (*in));
 		return (B_FALSE);
 	}
 	mlxcx_cmd_wait(&cmd);
@@ -2370,6 +2375,7 @@ mlxcx_cmd_create_cq(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq)
 		mlcq->mlcq_num = from_be24(out.mlxo_create_cq_cqn);
 	}
 	mlxcx_cmd_fini(mlxp, &cmd);
+	kmem_free(in, sizeof (*in));
 	return (ret);
 }
 
@@ -2379,11 +2385,11 @@ mlxcx_cmd_query_rq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 {
 	mlxcx_cmd_t cmd;
 	mlxcx_cmd_query_rq_in_t in;
-	mlxcx_cmd_query_rq_out_t out;
+	mlxcx_cmd_query_rq_out_t *out;
 	boolean_t ret;
 
 	bzero(&in, sizeof (in));
-	bzero(&out, sizeof (out));
+	out = kmem_zalloc(sizeof (mlxcx_cmd_query_rq_out_t), KM_SLEEP);
 
 	VERIFY(mlwq->mlwq_state & MLXCX_WQ_ALLOC);
 	VERIFY(mlwq->mlwq_state & MLXCX_WQ_CREATED);
@@ -2395,18 +2401,20 @@ mlxcx_cmd_query_rq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 
 	in.mlxi_query_rq_rqn = to_be24(mlwq->mlwq_num);
 
-	if (!mlxcx_cmd_send(mlxp, &cmd, &in, sizeof (in), &out, sizeof (out))) {
+	if (!mlxcx_cmd_send(mlxp, &cmd, &in, sizeof (in), out, sizeof (*out))) {
 		mlxcx_cmd_fini(mlxp, &cmd);
+		kmem_free(out, sizeof (*out));
 		return (B_FALSE);
 	}
 	mlxcx_cmd_wait(&cmd);
 
 	ret = mlxcx_cmd_evaluate(mlxp, &cmd);
 	if (ret) {
-		bcopy(&out.mlxo_query_rq_context, ctxp,
+		bcopy(&out->mlxo_query_rq_context, ctxp,
 		    sizeof (mlxcx_rq_ctx_t));
 	}
 	mlxcx_cmd_fini(mlxp, &cmd);
+	kmem_free(out, sizeof (*out));
 	return (ret);
 }
 
@@ -2416,11 +2424,11 @@ mlxcx_cmd_query_sq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 {
 	mlxcx_cmd_t cmd;
 	mlxcx_cmd_query_sq_in_t in;
-	mlxcx_cmd_query_sq_out_t out;
+	mlxcx_cmd_query_sq_out_t *out;
 	boolean_t ret;
 
 	bzero(&in, sizeof (in));
-	bzero(&out, sizeof (out));
+	out = kmem_zalloc(sizeof (mlxcx_cmd_query_sq_out_t), KM_SLEEP);
 
 	VERIFY(mlwq->mlwq_state & MLXCX_WQ_ALLOC);
 	VERIFY(mlwq->mlwq_state & MLXCX_WQ_CREATED);
@@ -2432,18 +2440,20 @@ mlxcx_cmd_query_sq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 
 	in.mlxi_query_sq_sqn = to_be24(mlwq->mlwq_num);
 
-	if (!mlxcx_cmd_send(mlxp, &cmd, &in, sizeof (in), &out, sizeof (out))) {
+	if (!mlxcx_cmd_send(mlxp, &cmd, &in, sizeof (in), out, sizeof (*out))) {
 		mlxcx_cmd_fini(mlxp, &cmd);
+		kmem_free(out, sizeof (*out));
 		return (B_FALSE);
 	}
 	mlxcx_cmd_wait(&cmd);
 
 	ret = mlxcx_cmd_evaluate(mlxp, &cmd);
 	if (ret) {
-		bcopy(&out.mlxo_query_sq_context, ctxp,
+		bcopy(&out->mlxo_query_sq_context, ctxp,
 		    sizeof (mlxcx_sq_ctx_t));
 	}
 	mlxcx_cmd_fini(mlxp, &cmd);
+	kmem_free(out, sizeof (*out));
 	return (ret);
 }
 
@@ -2453,11 +2463,11 @@ mlxcx_cmd_query_cq(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq,
 {
 	mlxcx_cmd_t cmd;
 	mlxcx_cmd_query_cq_in_t in;
-	mlxcx_cmd_query_cq_out_t out;
+	mlxcx_cmd_query_cq_out_t *out;
 	boolean_t ret;
 
 	bzero(&in, sizeof (in));
-	bzero(&out, sizeof (out));
+	out = kmem_zalloc(sizeof (mlxcx_cmd_query_cq_out_t), KM_SLEEP);
 
 	VERIFY(mlcq->mlcq_state & MLXCX_CQ_ALLOC);
 	VERIFY(mlcq->mlcq_state & MLXCX_CQ_CREATED);
@@ -2468,18 +2478,20 @@ mlxcx_cmd_query_cq(mlxcx_t *mlxp, mlxcx_completion_queue_t *mlcq,
 
 	in.mlxi_query_cq_cqn = to_be24(mlcq->mlcq_num);
 
-	if (!mlxcx_cmd_send(mlxp, &cmd, &in, sizeof (in), &out, sizeof (out))) {
+	if (!mlxcx_cmd_send(mlxp, &cmd, &in, sizeof (in), out, sizeof (*out))) {
 		mlxcx_cmd_fini(mlxp, &cmd);
+		kmem_free(out, sizeof (*out));
 		return (B_FALSE);
 	}
 	mlxcx_cmd_wait(&cmd);
 
 	ret = mlxcx_cmd_evaluate(mlxp, &cmd);
 	if (ret) {
-		bcopy(&out.mlxo_query_cq_context, ctxp,
+		bcopy(&out->mlxo_query_cq_context, ctxp,
 		    sizeof (mlxcx_completionq_ctx_t));
 	}
 	mlxcx_cmd_fini(mlxp, &cmd);
+	kmem_free(out, sizeof (*out));
 	return (ret);
 }
 
@@ -2522,7 +2534,7 @@ boolean_t
 mlxcx_cmd_create_rq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq)
 {
 	mlxcx_cmd_t cmd;
-	mlxcx_cmd_create_rq_in_t in;
+	mlxcx_cmd_create_rq_in_t *in;
 	mlxcx_cmd_create_rq_out_t out;
 	boolean_t ret;
 	mlxcx_rq_ctx_t *ctx;
@@ -2530,7 +2542,7 @@ mlxcx_cmd_create_rq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq)
 	const ddi_dma_cookie_t *c;
 	uint64_t pa, npages;
 
-	bzero(&in, sizeof (in));
+	in = kmem_zalloc(sizeof (mlxcx_cmd_create_rq_in_t), KM_SLEEP);
 	bzero(&out, sizeof (out));
 
 	ASSERT(mutex_owned(&mlwq->mlwq_mtx));
@@ -2539,10 +2551,10 @@ mlxcx_cmd_create_rq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq)
 	VERIFY0(mlwq->mlwq_state & MLXCX_WQ_CREATED);
 
 	mlxcx_cmd_init(mlxp, &cmd);
-	mlxcx_cmd_in_header_init(&cmd, &in.mlxi_create_rq_head,
+	mlxcx_cmd_in_header_init(&cmd, &in->mlxi_create_rq_head,
 	    MLXCX_OP_CREATE_RQ, 0);
 
-	ctx = &in.mlxi_create_rq_context;
+	ctx = &in->mlxi_create_rq_context;
 
 	set_bit32(&ctx->mlrqc_flags, MLXCX_RQ_FLAGS_RLKEY);
 	set_bit32(&ctx->mlrqc_flags, MLXCX_RQ_FLAGS_FLUSH_IN_ERROR);
@@ -2579,8 +2591,9 @@ mlxcx_cmd_create_rq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq)
 	    offsetof(mlxcx_workq_ctx_t, mlwqc_pas) +
 	    sizeof (uint64_t) * npages;
 
-	if (!mlxcx_cmd_send(mlxp, &cmd, &in, insize, &out, sizeof (out))) {
+	if (!mlxcx_cmd_send(mlxp, &cmd, in, insize, &out, sizeof (out))) {
 		mlxcx_cmd_fini(mlxp, &cmd);
+		kmem_free(in, sizeof (*in));
 		return (B_FALSE);
 	}
 	mlxcx_cmd_wait(&cmd);
@@ -2591,6 +2604,7 @@ mlxcx_cmd_create_rq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq)
 		mlwq->mlwq_num = from_be24(out.mlxo_create_rq_rqn);
 	}
 	mlxcx_cmd_fini(mlxp, &cmd);
+	kmem_free(in, sizeof (*in));
 	return (ret);
 }
 
@@ -3399,7 +3413,7 @@ boolean_t
 mlxcx_cmd_create_sq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq)
 {
 	mlxcx_cmd_t cmd;
-	mlxcx_cmd_create_sq_in_t in;
+	mlxcx_cmd_create_sq_in_t *in;
 	mlxcx_cmd_create_sq_out_t out;
 	boolean_t ret;
 	mlxcx_sq_ctx_t *ctx;
@@ -3407,7 +3421,7 @@ mlxcx_cmd_create_sq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq)
 	const ddi_dma_cookie_t *c;
 	uint64_t pa, npages;
 
-	bzero(&in, sizeof (in));
+	in = kmem_zalloc(sizeof (mlxcx_cmd_create_sq_in_t), KM_SLEEP);
 	bzero(&out, sizeof (out));
 
 	ASSERT(mutex_owned(&mlwq->mlwq_mtx));
@@ -3416,10 +3430,10 @@ mlxcx_cmd_create_sq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq)
 	VERIFY0(mlwq->mlwq_state & MLXCX_WQ_CREATED);
 
 	mlxcx_cmd_init(mlxp, &cmd);
-	mlxcx_cmd_in_header_init(&cmd, &in.mlxi_create_sq_head,
+	mlxcx_cmd_in_header_init(&cmd, &in->mlxi_create_sq_head,
 	    MLXCX_OP_CREATE_SQ, 0);
 
-	ctx = &in.mlxi_create_sq_context;
+	ctx = &in->mlxi_create_sq_context;
 
 	set_bit32(&ctx->mlsqc_flags, MLXCX_SQ_FLAGS_RLKEY);
 	set_bit32(&ctx->mlsqc_flags, MLXCX_SQ_FLAGS_FLUSH_IN_ERROR);
@@ -3462,8 +3476,9 @@ mlxcx_cmd_create_sq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq)
 	    offsetof(mlxcx_workq_ctx_t, mlwqc_pas) +
 	    sizeof (uint64_t) * npages;
 
-	if (!mlxcx_cmd_send(mlxp, &cmd, &in, insize, &out, sizeof (out))) {
+	if (!mlxcx_cmd_send(mlxp, &cmd, in, insize, &out, sizeof (out))) {
 		mlxcx_cmd_fini(mlxp, &cmd);
+		kmem_free(in, sizeof (*in));
 		return (B_FALSE);
 	}
 	mlxcx_cmd_wait(&cmd);
@@ -3474,6 +3489,7 @@ mlxcx_cmd_create_sq(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq)
 		mlwq->mlwq_num = from_be24(out.mlxo_create_sq_sqn);
 	}
 	mlxcx_cmd_fini(mlxp, &cmd);
+	kmem_free(in, sizeof (*in));
 	return (ret);
 }
 
