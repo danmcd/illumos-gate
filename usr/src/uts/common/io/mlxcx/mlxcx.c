@@ -1259,7 +1259,7 @@ mlxcx_regs_map(mlxcx_t *mlxp)
 	 * device.
 	 */
 	bzero(&da, sizeof (ddi_device_acc_attr_t));
-	da.devacc_attr_version = DDI_DEVICE_ATTR_V0;
+	da.devacc_attr_version = DDI_DEVICE_ATTR_V1;
 	da.devacc_attr_endian_flags = DDI_STRUCTURE_BE_ACC;
 	da.devacc_attr_dataorder = DDI_STRICTORDER_ACC;
 	if (DDI_FM_ACC_ERR_CAP(mlxp->mlx_fm_caps)) {
