@@ -167,7 +167,7 @@ extern "C" {
  * How big does an mblk have to be before we dma_bind() it instead of
  * bcopying?
  */
-#define	MLXCX_TX_BIND_THRESHOLD_DFLT	2048
+#define	MLXCX_TX_BIND_THRESHOLD_DFLT	512
 
 /*
  * How often to check the status of completion queues for overflow and
