@@ -2442,7 +2442,7 @@ mlxcx_buf_prepare_sqe(mlxcx_t *mlxp, mlxcx_work_queue_t *mlwq,
 	}
 	if (ctx->mtc_lsoflags & HW_LSO) {
 		ASSERT(mlxp->mlx_caps->mlc_lso);
-		ASSERT3U(ctx->mctx_inline_hdrlen, >, 0);
+		ASSERT3U(ctx->mtc_inline_hdrlen, >, 0);
 		ent0->mlsqe_control.mlcs_opcode = MLXCX_WQE_OP_LSO;
 		ent0->mlsqe_eth.mles_mss = to_be16(ctx->mtc_mss);
 	}
