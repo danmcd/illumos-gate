@@ -39,6 +39,10 @@
 #include "ixgbe_phy.h"
 #include "ixgbe_api.h"
 
+#ifndef __illumos__
+
+/* ILLUMOS NOTE: If these become more than mutex initializations, revisit. */
+
 /**
  * ixgbe_init_aci - initialization routine for Admin Command Interface
  * @hw: pointer to the hardware structure
@@ -60,6 +64,7 @@ void ixgbe_shutdown_aci(struct ixgbe_hw *hw)
 {
 	ixgbe_destroy_lock(&hw->aci.lock);
 }
+#endif /* __illumos__ */
 
 /**
  * ixgbe_should_retry_aci_send_cmd_execute - decide if ACI command should
