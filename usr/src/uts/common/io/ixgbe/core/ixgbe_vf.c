@@ -33,7 +33,11 @@
 ******************************************************************************/
 
 
-#include "ixgbe.h"
+/* XXX KEBE ASKS, WTF else do we need here?!? */
+/* #include "ixgbe.h" */
+#include "ixgbe_api.h"
+#include "ixgbe_type.h"
+#include "ixgbe_vf.h"
 
 #define IXGBE_VFWRITE_REG IXGBE_WRITE_REG
 #define IXGBE_VFREAD_REG IXGBE_READ_REG

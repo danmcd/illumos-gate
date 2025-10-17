@@ -25,7 +25,7 @@ ixgbe_e610.[ch] have __illumos__ CPP blocks where appropriate.  IF the
 ixgbe_{init,shutdown}_aci() functions grow to beyond "initialize the mutex",
 we will need to revisit what we've done here.
 
-o E610 Memory allocatoin
+o E610 Memory allocation
 
 E610 thinks everything has malloc/calloc/free. We need to lie to them about
 it, unfortunately. It *does* allow us to track E610's allocations if/when we

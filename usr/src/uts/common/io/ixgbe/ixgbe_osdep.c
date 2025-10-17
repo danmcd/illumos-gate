@@ -76,7 +76,7 @@ ixgbe_removed(struct ixgbe_hw *hw)
 
 typedef struct {
 	size_t mm_size;
-	uint8_t mm_data[];
+	uint8_t mm_data[0];
 } mallocmem_t;
 
 void *
@@ -112,9 +112,10 @@ ixgbe_malloc(struct ixgbe_hw __unused *hw, size_t size)
 }
 
 void
-kmem_free(struct ixgbe_hw __unused *hw, void *tofree)
+ixgbe_free(struct ixgbe_hw __unused *hw, void *tofree)
 {
-	mallocmem_t *actually_free = ((uint8_t *)tofree - sizeof (size_t));
+	mallocmem_t *actually_free =
+	    (mallocmem_t *)((uint8_t *)tofree - sizeof (size_t));
 
 	kmem_free(actually_free, actually_free->mm_size);
 }

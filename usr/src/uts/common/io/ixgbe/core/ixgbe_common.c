@@ -3238,7 +3238,7 @@ s32 ixgbe_disable_pcie_primary(struct ixgbe_hw *hw)
 
 	/* Exit if primary requests are blocked */
 	if (!(IXGBE_READ_REG(hw, IXGBE_STATUS) & IXGBE_STATUS_GIO) ||
-	    IXGBE_REMOVED(hw->hw_addr))
+	    IXGBE_REMOVED(hw))
 		goto out;
 
 	/* Poll for primary request bit to clear */
@@ -3270,7 +3270,7 @@ s32 ixgbe_disable_pcie_primary(struct ixgbe_hw *hw)
 	for (i = 0; i < poll; i++) {
 		usec_delay(100);
 		value = IXGBE_READ_PCIE_WORD(hw, IXGBE_PCI_DEVICE_STATUS);
-		if (IXGBE_REMOVED(hw->hw_addr))
+		if (IXGBE_REMOVED(hw))
 			goto out;
 		if (!(value & IXGBE_PCI_DEVICE_STATUS_TRANSACTION_PENDING))
 			goto out;
@@ -3709,7 +3709,7 @@ u16 ixgbe_get_pcie_msix_count_generic(struct ixgbe_hw *hw)
 
 	DEBUGFUNC("ixgbe_get_pcie_msix_count_generic");
 	msix_count = IXGBE_READ_PCIE_WORD(hw, pcie_offset);
-	if (IXGBE_REMOVED(hw->hw_addr))
+	if (IXGBE_REMOVED(hw))
 		msix_count = 0;
 	msix_count &= IXGBE_PCIE_MSIX_TBL_SZ_MASK;
 
@@ -3814,7 +3814,7 @@ s32 ixgbe_clear_vmdq_generic(struct ixgbe_hw *hw, u32 rar, u32 vmdq)
 	mpsar_lo = IXGBE_READ_REG(hw, IXGBE_MPSAR_LO(rar));
 	mpsar_hi = IXGBE_READ_REG(hw, IXGBE_MPSAR_HI(rar));
 
-	if (IXGBE_REMOVED(hw->hw_addr))
+	if (IXGBE_REMOVED(hw))
 		goto done;
 
 	if (!mpsar_lo && !mpsar_hi)
@@ -4916,7 +4916,7 @@ void ixgbe_clear_tx_pending(struct ixgbe_hw *hw)
 	for (i = 0; i < poll; i++) {
 		usec_delay(100);
 		value = IXGBE_READ_PCIE_WORD(hw, IXGBE_PCI_DEVICE_STATUS);
-		if (IXGBE_REMOVED(hw->hw_addr))
+		if (IXGBE_REMOVED(hw))
 			goto out;
 		if (!(value & IXGBE_PCI_DEVICE_STATUS_TRANSACTION_PENDING))
 			goto out;

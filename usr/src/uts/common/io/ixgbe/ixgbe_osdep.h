@@ -114,16 +114,21 @@ boolean_t ixgbe_removed(struct ixgbe_hw *);
 #define	IXGBE_CPU_TO_LE16	BSWAP_16
 #define	IXGBE_CPU_TO_LE32	BSWAP_32
 /* Uggh, have to paramaterize this because of _CPUS after this... */
+#define	IXGBE_LE16_TO_CPU(x)	BSWAP_32(x)
 #define	IXGBE_LE32_TO_CPU(x)	BSWAP_32(x)
 #define	IXGBE_LE32_TO_CPUS(x)	*(x) = BSWAP_32(*(x))
+#define	IXGBE_LE64_TO_CPU(x)	BSWAP_64(x)
 #define	IXGBE_CPU_TO_BE16(x)	(x)
 #define	IXGBE_CPU_TO_BE32(x)	(x)
+#define	IXGBE_CPU_TO_BE64(x)	(x)
 #define	IXGBE_BE32_TO_CPU(x)	(x)
 #else
 #define	IXGBE_CPU_TO_LE16(x)	(x)
 #define	IXGBE_CPU_TO_LE32(x)	(x)
-#define	IXGBE_LE32_TO_CPUS(x)	(x)
+#define	IXGBE_LE16_TO_CPU(x)	(x)
 #define	IXGBE_LE32_TO_CPU(x)	(x)
+#define	IXGBE_LE32_TO_CPUS(x)	(x)
+#define	IXGBE_LE64_TO_CPU(x)	(x)
 #define	IXGBE_CPU_TO_BE16	BSWAP_16
 #define	IXGBE_CPU_TO_BE32	BSWAP_32
 #define	IXGBE_BE32_TO_CPU	BSWAP_32
