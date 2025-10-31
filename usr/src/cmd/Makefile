@@ -30,6 +30,7 @@
 # Copyright 2018 Gary Mills
 # Copyright 2019 Peter Tribble
 # Copyright 2021 OmniOS Community Edition (OmniOSce) Association.
+# Copyright 2025 Edgecast Cloud LLC.
 #
 
 include ../Makefile.master
@@ -468,6 +469,7 @@ COMMON_SUBDIRS=		\
 	zdb		\
 	zdump		\
 	zfs		\
+	zfscache	\
 	zhack		\
 	zic		\
 	zinject		\
