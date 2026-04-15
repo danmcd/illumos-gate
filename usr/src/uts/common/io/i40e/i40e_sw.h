@@ -138,6 +138,8 @@ extern "C" {
 #define	I40E_MIN_MTU	ETHERMIN
 #define	I40E_DEF_MTU	ETHERMTU
 
+#define	I40E_MIN_MSS	64
+
 /*
  * Interrupt throttling related values. Interrupt throttling values are defined
  * in two microsecond increments. Note that a value of zero basically says do no

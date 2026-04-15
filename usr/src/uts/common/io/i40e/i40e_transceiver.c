@@ -1846,9 +1846,25 @@ i40e_tx_context(i40e_t *i40e, i40e_trqpair_t *itrq, mblk_t *mp,
 			return (-1);
 		}
 
+		size_t len = msgsize(mp);
+
+		if (mss < I40E_MIN_MSS) {
+			/* Protect against invalid MSS values */
+			if (len > i40e->i40e_sdu) {
+				/* We can't send this */
+				return (-1);
+			}
+
+			/*
+			 * We can proceed without TSO/LSO, but still use
+			 * checksum offload
+			 */
+			return (0);
+		}
+
 		tctx->itc_ctx_cmdflags |= I40E_TX_CTX_DESC_TSO;
 		tctx->itc_ctx_mss = mss;
-		tctx->itc_ctx_tsolen = msgsize(mp) -
+		tctx->itc_ctx_tsolen = len -
 		    (meo->meoi_l2hlen + meo->meoi_l3hlen + meo->meoi_l4hlen);
 	}
 
