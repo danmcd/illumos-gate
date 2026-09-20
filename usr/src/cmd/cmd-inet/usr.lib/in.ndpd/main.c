@@ -1916,7 +1916,7 @@ loopback_ra_enqueue(struct phyint *pi, struct nd_router_advert *ra, int len)
 	if (debug & D_PKTOUT)
 		logmsg(LOG_DEBUG, "loopback_ra_enqueue for %s\n", pi->pi_name);
 
-	raq = calloc(sizeof (struct raq), 1);
+	raq = calloc(1, sizeof (struct raq));
 	if (raq == NULL) {
 		logmsg(LOG_ERR, "loopback_ra_enqueue: out of memory\n");
 		return;
