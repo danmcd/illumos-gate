@@ -24,6 +24,8 @@
 # Use is subject to license terms.
 #
 # Copyright (c) 2018, Joyent, Inc.
+# Copyright 2026 Oxide Computer Company
+#
 
 PROG=		in.ndpd
 OBJS=		config.o main.o ndp.o tables.o trace.o
@@ -31,6 +33,8 @@ SVCMETHOD=	svc-ndp
 MANIFEST=	ndp.xml
 
 include		../../../Makefile.cmd
+include		../../../Makefile.cmd.64
+include		../../../Makefile.ctf
 
 ROOTMANIFESTDIR=	$(ROOTSVCNETWORKROUTING)
 
@@ -49,8 +53,8 @@ $(OBJS)		:= CPPFLAGS +=  $(_D_UNIX98_EXTN)
 CERRWARN += -_gcc=-Wno-switch
 CERRWARN += $(CNOWARN_UNINIT)
 
-# not linted
-SMATCH=off
+# not linted XXX KEBE SAYS FIX ME!
+# SMATCH=off
 
 CTFCONVERT_HOOK = && $(CTFCONVERT_O)
 CTFMERGE_HOOK = && $(CTFMERGE) -L VERSION -o $@ $(OBJS)
