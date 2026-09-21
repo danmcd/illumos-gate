@@ -115,13 +115,8 @@ static	int	phyint_check_ipadm_intfid(struct phyint *);
 uint_t
 getcurrenttime(void)
 {
-	struct timeval tp;
-
-	if (gettimeofday(&tp, NULL) < 0) {
-		logperror("getcurrenttime: gettimeofday failed");
-		exit(1);
-	}
-	return (tp.tv_sec * 1000 + tp.tv_usec / 1000);
+	/* XXX KEBE WONDERS IF THIS IS TOO DAMNED NAIVE? */
+	return (NSEC2MSEC(gethrtime()));
 }
 
 /*
