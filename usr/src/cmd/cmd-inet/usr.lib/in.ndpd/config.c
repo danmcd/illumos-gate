@@ -50,7 +50,7 @@ struct configinfo {
 	uint_t	ci_max;		/* ~0U: no max check */
 	uint_t	ci_default;
 	uint_t	ci_index;	/* Into result array */
-	pfb_t	ci_parsefunc;	/* Parse function returns -1 on failure */
+	pfb_t	ci_parsefunc;	/* Parse function returns B_FALSE on failure */
 };
 
 enum config_type { CONFIG_IF, CONFIG_PREFIX};
@@ -66,6 +66,7 @@ static void parse_if(struct configinfo *, char **, int);
 static void parse_prefix(struct configinfo *, char **, int);
 static boolean_t parse_onoff(char *, uint_t *);	/* boolean */
 static boolean_t parse_int(char *, uint_t *);	/* integer */
+static boolean_t parse_secs_msec_common(char *, uint_t *, boolean_t);
 static boolean_t parse_ms(char *, uint_t *);	/* milliseconds */
 static boolean_t parse_s(char *, uint_t *);	/* seconds */
 static boolean_t parse_date(char *, uint_t *);	/* date format */
@@ -748,38 +749,54 @@ static boolean_t
 parse_int(char *str, uint_t *resp)
 {
 	char *end;
-	int res;
+	ulong_t res;
 
 	res = strtoul(str, &end, 0);
-	if (end == str)
+	if (end == str || res > UINT_MAX)
 		return (_B_FALSE);
 	*resp = res;
 	return (_B_TRUE);
 }
 
-/*
- * Parse something with a unit of millseconds.
- * Regognizes the suffixes "ms", "s", "m", "h", and "d".
- *
- * Returns true if ok (and *resp updated) and false if failed.
- */
+static boolean_t
+parse_s(char *str, uint_t *resp)
+{
+	return (parse_secs_msec_common(str, resp, _B_FALSE));
+}
+
 static boolean_t
 parse_ms(char *str, uint_t *resp)
 {
+	return (parse_secs_msec_common(str, resp, _B_TRUE));
+}
+
+/*
+ * Common second or millisecond parsing code.
+ *
+ * Recognizes the suffixes "ms", "s", "m", "h", and "d", but will reject
+ * ms if told to do so.
+ *
+ * Updates *resp to 0 and returns false if failed, updates resp to specified
+ * value (even if 0) and returns true upon success.
+ */
+static boolean_t
+parse_secs_msec_common(char *str, uint_t *resp, boolean_t return_msec)
+{
 	/* Look at the last and next to last character */
-	char *cp, *last, *nlast;
+	char *last, *nlast;
 	char str2[BUFSIZ];	/* For local modification */
-	int multiplier = 1;
+	uint_t multiplier = 1;
+	size_t field_length = strlcpy(str2, str, BUFSIZ);
 
-	(void) strncpy(str2, str, sizeof (str2));
-	str2[sizeof (str2) - 1] = '\0';
-
-	last = str2;
-	nlast = NULL;
-	for (cp = str2; *cp != '\0'; cp++) {
-		nlast = last;
-		last = cp;
+	if (field_length >= BUFSIZ || field_length == 0) {
+		/* Error out! */
+		*resp = 0;
+		return (_B_FALSE);
 	}
+	
+	last = &(str2[field_length - 1]);
+	nlast = (field_lengh > 1) ? (last - 1) : NULL;
+	
 	if (debug & D_PARSE) {
 		logmsg(LOG_DEBUG, "parse_ms: last <%c> nlast <%c>\n",
 		    (last != NULL ? *last : ' '),
@@ -795,69 +812,39 @@ parse_ms(char *str, uint_t *resp)
 	case 'm':
 		multiplier *= 60;
 		*last = '\0';
-		multiplier *= 1000;	/* Convert to milliseconds */
 		break;
 	case 's':
 		/* Could be "ms" or "s" */
 		if (nlast != NULL && *nlast == 'm') {
-			/* "ms" */
+			/* "ms", no multiplication needed, but... */
+			if (!return_msec) {
+				/*
+				 * ... if we specify msec where we need sec,
+				 * error out!
+				 */
+				*resp = 0;
+				return (_B_FALSE);
+			}
 			*nlast = '\0';
 		} else {
+			/* "s" */
 			*last = '\0';
-			multiplier *= 1000;	/* Convert to milliseconds */
 		}
+		/* FALLTHRU */
+	default:
+		/* Take our chances with parse_int() below. */
 		break;
 	}
 
-	if (!parse_int(str2, resp))
+	if (return_msec)
+		multiplier *= 1000;
+
+	CTASSERT(sizeof (uint_t) < sizeof (ulong_t));
+	if (!parse_int(str2, resp) ||
+	    (ulong_t)(*resp) * (ulong_t)multiplier > UINT_MAX) {
+		*resp = 0;
 		return (_B_FALSE);
-
-	*resp *= multiplier;
-	return (_B_TRUE);
-}
-
-/*
- * Parse something with a unit of seconds.
- * Regognizes the suffixes "s", "m", "h", and "d".
- *
- * Returns true if ok (and *resp updated) and false if failed.
- */
-static boolean_t
-parse_s(char *str, uint_t *resp)
-{
-	/* Look at the last character */
-	char *cp, *last;
-	char str2[BUFSIZ];	/* For local modification */
-	int multiplier = 1;
-
-	(void) strncpy(str2, str, sizeof (str2));
-	str2[sizeof (str2) - 1] = '\0';
-
-	last = str2;
-	for (cp = str2; *cp != '\0'; cp++) {
-		last = cp;
 	}
-	if (debug & D_PARSE) {
-		logmsg(LOG_DEBUG, "parse_s: last <%c>\n",
-		    (last != NULL ? *last : ' '));
-	}
-	switch (*last) {
-	case 'd':
-		multiplier *= 24;
-		/* FALLTHRU */
-	case 'h':
-		multiplier *= 60;
-		/* FALLTHRU */
-	case 'm':
-		multiplier *= 60;
-		/* FALLTHRU */
-	case 's':
-		*last = '\0';
-		break;
-	}
-	if (!parse_int(str2, resp))
-		return (_B_FALSE);
-
 	*resp *= multiplier;
 	return (_B_TRUE);
 }
@@ -902,23 +889,32 @@ parse_addrprefix(char *strin, struct in6_addr *in6)
  * If the date has passed return zero.
  *
  * Returns true if ok (and *resp updated) and false if failed.
- * XXX Due to getdate limitations can not exceed year 2038.
  */
 static boolean_t
 parse_date(char *str, uint_t *resp)
 {
 	struct tm *tm;
 	struct timeval tvs;
-	time_t time, ntime;
+	time_t time, ntime, delta;
 
 	if (getenv("DATEMSK") == NULL) {
 		(void) putenv("DATEMSK=/etc/inet/datemsk.ndpd");
 	}
 
+	/*
+	 * Only here will we ever depend on the wallclock.
+	 *
+	 * NOTE: It's potentially dangerous if ndpd is up before any wallclock
+	 * normalization such as NTP. We could have a large delta.
+	 *
+	 * XXX KEBE ASKS, do we want to allow this?!?
+	 */
+
 	if (gettimeofday(&tvs, NULL) < 0) {
 		logperror("gettimeofday");
 		return (_B_FALSE);
 	}
+	/* XXX KEBE ASKS, Y2038-happy now that we're 64-bit? */
 	time = tvs.tv_sec;
 	tm = getdate(str);
 	if (tm == NULL) {
@@ -928,20 +924,27 @@ parse_date(char *str, uint_t *resp)
 	}
 
 	ntime = mktime(tm);
+	delta = ntime - time;
 
 	if (debug & D_PARSE) {
 		char buf[BUFSIZ];
 
 		(void) strftime(buf, sizeof (buf), "%Y-%m-%d %R %Z", tm);
 		logmsg(LOG_DEBUG, "parse_date: <%s>, delta %ld seconds\n",
-		    buf, ntime - time);
+		    buf, delta);
 	}
-	if (ntime < time) {
+	if (delta < 0) {
 		conferr("Date in the past <%s>\n", str);
 		*resp = 0;
 		return (_B_TRUE);
 	}
-	*resp = (ntime - time);
+	if (delta > (time_t)MAX_UINT) {
+		conferr("Date is %ld more than (2^32 - 1)secs in the future.\n",
+		    delta);
+		*resp = 0;
+		return (_B_FALSE);
+	}
+	*resp = (uint_t)delta;
 	return (_B_TRUE);
 }
 

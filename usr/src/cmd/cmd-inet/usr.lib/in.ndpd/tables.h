@@ -69,16 +69,16 @@ struct phyint {
 	uint_t		pi_state;		/* PI_* below */
 	uint_t		pi_kernel_state;	/* PI_* below */
 	uint_t		pi_num_k_routers;	/* # routers in kernel */
-	uint_t		pi_reach_time_since_random;	/* In milliseconds */
+	ulong_t		pi_reach_time_since_random;	/* In milliseconds */
 
 	/* Applies if pi_AdvSendAdvertisements */
-	uint_t		pi_adv_time_left;	/* In milliseconds */
-	uint_t		pi_adv_time_since_sent;	/* In milliseconds */
+	ulong_t		pi_adv_time_left;	/* In milliseconds */
+	ulong_t		pi_adv_time_since_sent;	/* In milliseconds */
 	enum adv_states	pi_adv_state;
 	uint_t		pi_adv_count;
 
 	/* Applies if not pi_AdvSendAdvertisements */
-	uint_t		pi_sol_time_left;	/* In milliseconds */
+	ulong_t		pi_sol_time_left;	/* In milliseconds */
 	enum solicit_states pi_sol_state;
 	uint_t		pi_sol_count;
 
@@ -104,8 +104,8 @@ struct phyint {
 #define	pi_StatefulAddrConf	pi_config[I_StatefulAddrConf].cf_value
 
 	/* Recorded variables for RFC3041 addresses */
-	uint_t		pi_TmpDesyncFactor;		/* In milliseconds */
-	uint_t		pi_TmpRegenCountdown;		/* In milliseconds */
+	ulong_t		pi_TmpDesyncFactor;		/* In milliseconds */
+	ulong_t		pi_TmpRegenCountdown;		/* In milliseconds */
 
 	/* Recorded variables on node/host */
 	uint_t		pi_LinkMTU;
@@ -169,13 +169,13 @@ struct prefix {
 	boolean_t	pr_in_use;	/* To detect removed prefixes */
 
 	/* Recorded variables on node/host */
-	uint_t		pr_ValidLifetime;	/* In ms w/ 2 hour rule */
-	uint_t		pr_PreferredLifetime;	/* In millseconds */
-	uint_t		pr_OnLinkLifetime;	/* ms valid w/o 2 hour rule */
+	ulong_t		pr_ValidLifetime;	/* In ms w/ 2 hour rule */
+	ulong_t		pr_PreferredLifetime;	/* In millseconds */
+	ulong_t		pr_OnLinkLifetime;	/* ms valid w/o 2 hour rule */
 	boolean_t	pr_OnLinkFlag;
 	boolean_t	pr_AutonomousFlag;
 
-	uint_t		pr_CreateTime;		/* tmpaddr creation time */
+	ulong_t		pr_CreateTime;		/* tmpaddr creation time */
 						/* in SECONDS */
 	uint_t		pr_attempts;	/* attempts to configure */
 };
@@ -249,7 +249,7 @@ extern int num_of_phyints;
 /*
  * Functions
  */
-extern uint_t		getcurrenttime(void);
+extern ulong_t		getcurrenttime(void);
 
 extern struct phyint	*phyint_lookup(char *name);
 extern struct phyint	*phyint_lookup_on_index(uint_t ifindex);

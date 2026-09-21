@@ -110,8 +110,8 @@ extern struct	sockaddr_dl	*rta_ifp;
 /* Return a random number from a an range inclusive of the endpoints */
 #define	GET_RANDOM(LOW, HIGH) (random() % ((HIGH) - (LOW) + 1) + (LOW))
 
-#define	TIMER_INFINITY	0xFFFFFFFFU	/* Never time out */
-#define	PREFIX_INFINITY 0XFFFFFFFFU	/* A "forever" prefix lifetime */
+#define	TIMER_INFINITY	0xFFFFFFFFFFFFFFFFU /* Never time out */
+#define	PREFIX_INFINITY 0XFFFFFFFFFFFFFFFFU /* A "forever" prefix lifetime */
 
 /*
  * Used by 2 hour rule for stateless addrconf

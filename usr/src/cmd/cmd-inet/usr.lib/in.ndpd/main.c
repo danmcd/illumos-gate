@@ -109,19 +109,13 @@ static	int	ndpd_delete_addrs(const char *);
 static	int	phyint_check_ipadm_intfid(struct phyint *);
 
 /*
- * Return the current time in milliseconds truncated to
- * fit in an integer.
+ * Return the current monotonic time (hrtime) in milliseconds.
  */
-uint_t
+CTASSERT(sizeof (hrtime_t) <= sizeof (ulong_t));
+ulong_t
 getcurrenttime(void)
 {
-	struct timeval tp;
-
-	if (gettimeofday(&tp, NULL) < 0) {
-		logperror("getcurrenttime: gettimeofday failed");
-		exit(1);
-	}
-	return (tp.tv_sec * 1000 + tp.tv_usec / 1000);
+	return (NSEC2MSEC(gethrtime()));
 }
 
 /*
@@ -1109,8 +1103,8 @@ solicit_event(struct phyint *pi, enum solicit_events event, uint_t elapsed)
  * previous timer event. Timers exceeding TIMER_INFINITY milliseconds
  * will fire after TIMER_INFINITY milliseconds.
  */
-static uint_t timer_previous;	/* When last SIGALRM occurred */
-static uint_t timer_next;	/* Currently scheduled timeout */
+static ulong_t timer_previous;	/* When last SIGALRM occurred */
+static ulong_t timer_next;	/* Currently scheduled timeout */
 
 static void
 timer_init(void)
@@ -1129,7 +1123,7 @@ timer_init(void)
 void
 timer_schedule(uint_t delay)
 {
-	uint_t now;
+	ulong_t now;
 	struct itimerval itimerval;
 
 	now = getcurrenttime();
